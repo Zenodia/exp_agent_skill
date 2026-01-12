@@ -1,0 +1,21 @@
+# Calendar Assistant Agent Skill - Dependencies
+# Agent Skills Python API Compliant
+
+# Core dependencies (required)
+icalendar>=5.0.0
+python-dateutil>=2.8.0
+
+# Optional dependencies for AI parsing
+langchain-nvidia-ai-endpoints>=0.1.0
+langchain-core>=0.1.0
+
+# Optional dependencies for enhanced terminal output
+colorama>=0.4.0
+
+# Development dependencies (optional)
+# Uncomment for development
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.0.0
