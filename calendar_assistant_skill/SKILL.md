@@ -17,6 +17,7 @@ runtime:
 dependencies:
   - icalendar>=5.0.0
   - python-dateutil>=2.8.0
+  - PyYAML>=6.0
   - langchain-nvidia-ai-endpoints>=0.1.0
   - langchain-core>=0.1.0
   - colorama>=0.4.0
@@ -81,15 +82,12 @@ Robust timezone handling:
 When a user mentions scheduling or calendar-related tasks, follow this workflow:
 
 #### Method 1: Natural Language Input (Recommended)
+
 ```python
 from scripts.calendar_skill import CalendarAssistantSkill
-import os
 
 # Initialize the skill
-skill = CalendarAssistantSkill(
-    api_key=os.environ.get('NVIDIA_API_KEY'),
-    default_timezone='UTC'
-)
+skill = CalendarAssistantSkill()
 
 # Process natural language input
 user_input = "Schedule a team meeting tomorrow at 2pm for 2 hours"

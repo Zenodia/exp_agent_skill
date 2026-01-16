@@ -1,14 +1,19 @@
 """
 Calendar Assistant Agent Skill
-Main implementation of calendar management capabilities
+Agent Skills API Compliant
+
+This is the implementation code that gets called after the agent
+reads the SKILL.md instructions and decides to use this skill.
 
 This module provides the CalendarAssistantSkill class for creating and managing
 calendar events from natural language or structured inputs. Compliant with
 Agent Skills Python API specification.
 """
 
+import os
 from datetime import datetime, timedelta
 from icalendar import Calendar, Event, vCalAddress, vText, Alarm
+from pathlib import Path
 import zoneinfo
 import json
 import hashlib
@@ -36,13 +41,21 @@ except ImportError:
 
 class CalendarAssistantSkill:
     """
-    Agent Skill for calendar management and event creation
-    Provides natural language parsing and ICS file generation
+    Calendar management skill for AI agents
+    
+    This implementation is activated when an agent:
+    1. Discovers the skill via SKILL.md metadata in system prompt
+    2. Reads the full SKILL.md instructions
+    3. Decides the user needs calendar management
+    4. Calls this implementation
     
     Attributes:
         api_key (Optional[str]): NVIDIA API key for AI parsing
         default_timezone (str): Default timezone for events (IANA format)
         llm: Language model for natural language processing
+        version (str): Skill version
+        name (str): Skill identifier
+        skill_location (Path): Path to SKILL.md file for agent discovery
     """
     
     def __init__(self, api_key: Optional[str] = None, default_timezone: str = "UTC"):
@@ -50,7 +63,7 @@ class CalendarAssistantSkill:
         Initialize the Calendar Assistant Skill
         
         Args:
-            api_key: NVIDIA API key for AI parsing (optional)
+            api_key: NVIDIA API key for AI parsing (optional, defaults to NVIDIA_API_KEY env var)
             default_timezone: Default timezone for events (default: UTC)
         
         Raises:
@@ -62,13 +75,19 @@ class CalendarAssistantSkill:
         except zoneinfo.ZoneInfoNotFoundError:
             raise ValueError(f"Invalid timezone: {default_timezone}. Use IANA timezone names.")
         
-        self.api_key = api_key
+        self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
         self.default_timezone = default_timezone
         self.llm = None
         
-        if api_key and LANGCHAIN_AVAILABLE:
+        self.version = "1.0.0"
+        self.name = "calendar-assistant"
+        
+        # Skill location for agent discovery
+        self.skill_location = Path(__file__).parent.parent / "SKILL.md"
+        
+        if self.api_key and LANGCHAIN_AVAILABLE:
             self._initialize_llm()
-        elif api_key and not LANGCHAIN_AVAILABLE:
+        elif self.api_key and not LANGCHAIN_AVAILABLE:
             print("Warning: langchain packages not available. Install langchain-nvidia-ai-endpoints for AI parsing.")
     
     def _initialize_llm(self):
@@ -116,28 +135,7 @@ class CalendarAssistantSkill:
         
         try:
             current_date = reference_date.strftime("%Y-%m-%d")
-            system_prompt = f"""You are a calendar assistant. Parse user requests into structured event data.
-Return ONLY a valid JSON object with these fields:
-{{
-    "summary": "Event title",
-    "description": "Event description",
-    "start_date": "YYYY-MM-DD",
-    "start_time": "HH:MM",
-    "duration_hours": float,
-    "location": "Location (optional)",
-    "organizer_email": "email@example.com (optional)",
-    "organizer_name": "Name (optional)",
-    "reminder_hours": 1
-}}
-
-Current date for reference: {current_date}
-Timezone: {self.default_timezone}
-
-Example input: "Schedule a team meeting tomorrow at 2pm for 2 hours about Q4 planning"
-Example output: {{"summary": "Team Meeting - Q4 Planning", "start_date": "2026-01-13", "start_time": "14:00", "duration_hours": 2.0, "description": "Quarterly planning discussion", "reminder_hours": 1}}
-
-IMPORTANT: Return ONLY the JSON object, no explanations.
-"""
+            system_prompt = self._build_system_prompt(current_date)
             
             messages = [
                 SystemMessage(content=system_prompt),
@@ -388,9 +386,104 @@ IMPORTANT: Return ONLY the JSON object, no explanations.
         except Exception as e:
             return None, f"Error creating ICS: {str(e)}", event_data
     
+    def _build_system_prompt(self, current_date: str) -> str:
+        """
+        Build the system prompt with Agent Skills awareness
+        
+        According to https://agentskills.io/integrate-skills, agents should have
+        skill metadata injected into their system prompt for skill discovery.
+        
+        Args:
+            current_date: Current date string for reference
+            
+        Returns:
+            System prompt with optional skill metadata injection
+        """
+        # Get available skills metadata
+        available_skills_xml = self._get_available_skills_xml()
+        
+        base_prompt = f"""You are a calendar assistant. Parse user requests into structured event data.
+Return ONLY a valid JSON object with these fields:
+{{
+    "summary": "Event title",
+    "description": "Event description",
+    "start_date": "YYYY-MM-DD",
+    "start_time": "HH:MM",
+    "duration_hours": float,
+    "location": "Location (optional)",
+    "organizer_email": "email@example.com (optional)",
+    "organizer_name": "Name (optional)",
+    "reminder_hours": 1
+}}
+
+Current date for reference: {current_date}
+Timezone: {self.default_timezone}
+
+Example input: "Schedule a team meeting tomorrow at 2pm for 2 hours about Q4 planning"
+Example output: {{"summary": "Team Meeting - Q4 Planning", "start_date": "2026-01-13", "start_time": "14:00", "duration_hours": 2.0, "description": "Quarterly planning discussion", "reminder_hours": 1}}
+
+IMPORTANT: Return ONLY the JSON object, no explanations."""
+        
+        # Inject available skills metadata if running in agent context
+        if available_skills_xml:
+            return f"""{base_prompt}
+
+{available_skills_xml}"""
+        
+        return base_prompt
+    
+    def _get_available_skills_xml(self) -> str:
+        """
+        Generate the <available_skills> XML block for agent context injection
+        
+        This follows the Agent Skills specification:
+        https://agentskills.io/integrate-skills#injecting-into-context
+        
+        Returns:
+            XML string with skill metadata, or empty string if SKILL.md not found
+        """
+        if not self.skill_location.exists():
+            return ""
+        
+        # Parse SKILL.md frontmatter
+        try:
+            with open(self.skill_location, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Extract frontmatter
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    try:
+                        import yaml
+                        frontmatter = yaml.safe_load(parts[1])
+                        name = frontmatter.get('name', 'calendar-assistant')
+                        description = frontmatter.get('description', 'Calendar management skill')
+                        
+                        return f"""<available_skills>
+  <skill>
+    <name>{name}</name>
+    <description>{description}</description>
+    <location>{self.skill_location.absolute()}</location>
+  </skill>
+</available_skills>"""
+                    except:
+                        pass
+        except:
+            pass
+        
+        # Fallback if parsing fails
+        return f"""<available_skills>
+  <skill>
+    <name>calendar-assistant</name>
+    <description>A comprehensive calendar management skill that enables AI agents to create, parse, and manage calendar events using natural language or structured inputs.</description>
+    <location>{self.skill_location.absolute()}</location>
+  </skill>
+</available_skills>"""
+    
     def get_skill_info(self) -> Dict[str, Any]:
         """
-        Get information about this skill's capabilities
+        Get information about this skill's capabilities and status
         
         Returns:
             Dict with skill metadata including:
@@ -400,6 +493,7 @@ IMPORTANT: Return ONLY the JSON object, no explanations.
             - status: Initialization status
             - llm_available: Whether AI parsing is available
             - default_timezone: Configured timezone
+            - skill_location: Path to SKILL.md file
         
         Example:
             >>> skill = CalendarAssistantSkill()
@@ -407,8 +501,8 @@ IMPORTANT: Return ONLY the JSON object, no explanations.
             >>> print(info['capabilities'])
         """
         return {
-            "name": "calendar-assistant",
-            "version": "1.0.0",
+            "name": self.name,
+            "version": self.version,
             "capabilities": [
                 "parse_natural_language_to_event",
                 "create_ics_calendar_event",
@@ -419,10 +513,92 @@ IMPORTANT: Return ONLY the JSON object, no explanations.
                 "create_event_alarms"
             ],
             "status": "initialized",
+            "api_available": self.api_key is not None,
             "llm_available": self.llm is not None,
             "langchain_available": LANGCHAIN_AVAILABLE,
-            "default_timezone": self.default_timezone
+            "default_timezone": self.default_timezone,
+            "skill_location": str(self.skill_location.absolute()) if self.skill_location.exists() else "not found"
         }
+
+
+# Skill discovery utility for agents
+def discover_skills(skill_directories: List[str]) -> List[Dict[str, str]]:
+    """
+    Discover Agent Skills in specified directories
+    
+    According to https://agentskills.io/integrate-skills, agents should:
+    1. Scan configured directories for SKILL.md files
+    2. Parse only the frontmatter (name and description) at startup
+    3. Keep initial context usage low (~50-100 tokens per skill)
+    
+    Args:
+        skill_directories: List of directory paths to scan
+    
+    Returns:
+        List of skill metadata dicts with name, description, and location
+    """
+    skills = []
+    
+    for directory in skill_directories:
+        dir_path = Path(directory)
+        if not dir_path.exists():
+            continue
+        
+        # Find all SKILL.md files
+        for skill_md in dir_path.rglob("SKILL.md"):
+            try:
+                with open(skill_md, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Extract frontmatter
+                if content.startswith("---"):
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        try:
+                            import yaml
+                            frontmatter = yaml.safe_load(parts[1])
+                            
+                            skills.append({
+                                "name": frontmatter.get('name', 'unknown'),
+                                "description": frontmatter.get('description', ''),
+                                "location": str(skill_md.absolute()),
+                                "path": str(skill_md.parent)
+                            })
+                        except:
+                            pass
+            except:
+                continue
+    
+    return skills
+
+
+def generate_skills_xml(skills: List[Dict[str, str]]) -> str:
+    """
+    Generate XML for injecting into agent system prompt
+    
+    Format according to https://agentskills.io/integrate-skills#injecting-into-context
+    
+    Args:
+        skills: List of skill metadata from discover_skills()
+    
+    Returns:
+        XML string formatted for system prompt injection
+    """
+    if not skills:
+        return ""
+    
+    xml_parts = ["<available_skills>"]
+    
+    for skill in skills:
+        xml_parts.append(f"""  <skill>
+    <name>{skill['name']}</name>
+    <description>{skill['description']}</description>
+    <location>{skill['location']}</location>
+  </skill>""")
+    
+    xml_parts.append("</available_skills>")
+    
+    return "\n".join(xml_parts)
 
 
 # Convenience functions for skill discovery
@@ -459,48 +635,89 @@ def create_skill_instance(api_key: Optional[str] = None, **kwargs) -> CalendarAs
 # Example usage function for testing
 def example_usage():
     """Example of how to use the Calendar Assistant Skill"""
-    import os
     
-    # Initialize skill with API key from environment
-    api_key = os.environ.get('NVIDIA_API_KEY')
-    skill = CalendarAssistantSkill(api_key=api_key, default_timezone="Europe/Paris")
-    
-    print("=" * 60)
+    print("\n" + "="*60)
     print("Calendar Assistant Skill - Agent Skills API Compliant")
-    print("=" * 60)
-    print(json.dumps(skill.get_skill_info(), indent=2))
+    print("="*60 + "\n")
     
-    # Example 1: Create event manually
-    print("\n=== Example 1: Manual Event Creation ===")
-    start_time = datetime.now(zoneinfo.ZoneInfo("Europe/Paris")) + timedelta(days=1, hours=9)
-    ics_content = skill.create_calendar_event(
-        summary="Team Standup",
-        start_datetime=start_time,
-        duration_hours=0.5,
-        description="Daily team synchronization",
-        location="Conference Room A",
-        reminder_hours=0.25
-    )
-    print(f"✅ Created ICS file ({len(ics_content)} bytes)")
+    # Demonstrate skill discovery
+    print("🔍 Discovering skills...")
+    current_dir = Path(__file__).parent.parent
+    skills = discover_skills([str(current_dir)])
     
-    # Example 2: Natural language parsing
-    if api_key:
-        print("\n=== Example 2: Natural Language Parsing ===")
-        ics_content, error, parsed_data = skill.natural_language_to_ics(
-            "Schedule a client presentation next Tuesday at 3pm for 2 hours"
+    if skills:
+        print(f"✅ Found {len(skills)} skill(s):\n")
+        for skill in skills:
+            print(f"  - {skill['name']}: {skill['description'][:80]}...")
+            print(f"    Location: {skill['location']}\n")
+        
+        print("📝 Generated XML for agent prompt:")
+        print(generate_skills_xml(skills))
+        print()
+    
+    print("="*60 + "\n")
+    
+    # Check for API key
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        print("⚠️  Note: NVIDIA_API_KEY environment variable not set")
+        print("   Natural language parsing will be unavailable\n")
+    
+    # Initialize skill
+    try:
+        skill = CalendarAssistantSkill(api_key=api_key, default_timezone="UTC")
+        print("✅ Skill initialized successfully\n")
+        
+        # Show skill info
+        info = skill.get_skill_info()
+        print("📊 Skill Information:")
+        print(json.dumps(info, indent=2))
+        print("\n" + "="*60 + "\n")
+        
+        # Example 1: Create event manually
+        print("🧪 Testing manual event creation...")
+        start_time = datetime.now(zoneinfo.ZoneInfo("UTC")) + timedelta(days=1, hours=14)
+        ics_content = skill.create_calendar_event(
+            summary="Team Standup Meeting",
+            start_datetime=start_time,
+            duration_hours=0.5,
+            description="Daily team synchronization",
+            location="Conference Room A",
+            reminder_hours=1.0
         )
-        if error:
-            print(f"❌ Error: {error}")
+        print(f"✅ Created ICS file ({len(ics_content)} bytes)")
+        print("   Event: Team Standup Meeting")
+        print(f"   Start: {start_time.strftime('%Y-%m-%d %H:%M %Z')}")
+        print(f"   Duration: 30 minutes\n")
+        
+        # Example 2: Natural language parsing
+        if api_key:
+            print("🧪 Testing natural language parsing...")
+            ics_content, error, parsed_data = skill.natural_language_to_ics(
+                "Schedule a client presentation tomorrow at 2pm for 2 hours"
+            )
+            if error:
+                print(f"❌ Error: {error}")
+            else:
+                print("✅ Successfully parsed and created event:")
+                print(f"   {json.dumps(parsed_data, indent=3)}")
+                print(f"✅ Created ICS file ({len(ics_content)} bytes)\n")
         else:
-            print("✅ Parsed data:", json.dumps(parsed_data, indent=2))
-            print(f"✅ Created ICS file ({len(ics_content)} bytes)")
-    else:
-        print("\n=== Example 2: Skipped (no API key) ===")
-        print("Set NVIDIA_API_KEY environment variable to test AI parsing")
-    
-    print("\n" + "=" * 60)
+            print("⚠️  Skipping natural language test (no API key)")
+            print("   Set NVIDIA_API_KEY to test this feature\n")
+        
+        print("="*60 + "\n")
+        print("✅ All tests completed successfully!")
+        print("\n" + "="*60 + "\n")
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        exit(1)
 
 
+
+
+# Main execution for testing
 if __name__ == "__main__":
     example_usage()
 
