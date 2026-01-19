@@ -1,17 +1,41 @@
 """
 NVIDIA Idea Generation Skill Implementation
-Agent Skills API Compliant
+Agent Skills API Compliant with NAT Integration
 
 This is the implementation code that gets called after the agent
 reads the SKILL.md instructions and decides to use this skill.
+
+Includes @skill_tool decorated functions for NAT auto-discovery.
 """
 
 import os
+import sys
 from openai import OpenAI
-from typing import Generator, Dict, List, Optional
+from typing import Generator, Dict, List, Optional, Any
 import json
 from datetime import datetime
 from pathlib import Path
+
+# Import skill_tool decorator from skill_loader
+try:
+    from skill_loader import skill_tool
+except ImportError:
+    # Fallback: Add parent directory to path
+    parent_dir = Path(__file__).parent.parent.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    try:
+        from skill_loader import skill_tool
+    except ImportError:
+        # If still can't import, define a dummy decorator
+        def skill_tool(name=None, description=None, return_direct=False):
+            def decorator(func):
+                func._is_skill_tool = True
+                func._tool_name = name or func.__name__
+                func._tool_description = description or func.__doc__ or ""
+                func._tool_return_direct = return_direct
+                return func
+            return decorator
 
 
 class NvidiaIdeaGenSkill:
@@ -487,6 +511,310 @@ def generate_skills_xml(skills: List[Dict[str, str]]) -> str:
     xml_parts.append("</available_skills>")
     
     return "\n".join(xml_parts)
+
+
+# ============================================================================
+# NAT Auto-Discovery Tool Functions
+# These @skill_tool decorated functions are auto-discovered by the skill loader
+# ============================================================================
+
+# Global skill instance for tool functions
+_global_skill_instance = None
+
+def _get_skill_instance():
+    """Get or create the global skill instance"""
+    global _global_skill_instance
+    if _global_skill_instance is None:
+        api_key = os.getenv("NVIDIA_API_KEY")
+        try:
+            _global_skill_instance = NvidiaIdeaGenSkill(api_key=api_key)
+        except ValueError as e:
+            # API key not set - return None
+            print(f"Warning: {str(e)}")
+            return None
+    return _global_skill_instance
+
+
+@skill_tool(
+    name="generate_ideas",
+    description="Generate creative ideas on a topic. Returns a formatted string with numbered ideas.",
+    return_direct=False
+)
+def generate_ideas(
+    topic: str,
+    num_ideas: int = 5,
+    context: str = "",
+    creativity: float = 0.7
+) -> str:
+    """
+    Generate creative ideas on any topic
+    
+    Args:
+        topic: The topic to generate ideas about (required)
+        num_ideas: Number of ideas to generate, 1-10 (default: 5)
+        context: Additional context or constraints (optional)
+        creativity: Creativity level 0.0-1.0, higher is more creative (default: 0.7)
+    
+    Returns:
+        String with formatted ideas
+    
+    Examples:
+        >>> generate_ideas("sustainable urban transportation", num_ideas=3)
+        >>> generate_ideas("mobile apps", context="for remote workers", creativity=0.8)
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    return skill.generate_ideas(topic, num_ideas, context, creativity)
+
+
+@skill_tool(
+    name="brainstorm_concepts",
+    description="Brainstorm concepts for a domain with specific focus and constraints. More structured than generate_ideas.",
+    return_direct=False
+)
+def brainstorm_concepts(
+    domain: str,
+    focus_area: str = "",
+    constraints: Optional[List[str]] = None
+) -> str:
+    """
+    Brainstorm domain-specific concepts with constraints
+    
+    Args:
+        domain: Domain or field for brainstorming (e.g., "Healthcare Technology")
+        focus_area: Specific area within domain (optional, e.g., "patient monitoring")
+        constraints: List of requirements or constraints (optional)
+    
+    Returns:
+        String with structured brainstorming output
+    
+    Examples:
+        >>> brainstorm_concepts("Education Technology", "elementary math")
+        >>> brainstorm_concepts("Healthcare", "remote care", ["must work offline", "low cost"])
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    result = ""
+    for chunk in skill.brainstorm_concepts(domain, focus_area, constraints or []):
+        result += chunk
+    return result
+
+
+@skill_tool(
+    name="expand_idea_detailed",
+    description="Expand an idea with comprehensive details including implementation steps, requirements, and challenges.",
+    return_direct=False
+)
+def expand_idea_detailed(idea: str) -> str:
+    """
+    Expand an idea with detailed analysis
+    
+    Args:
+        idea: The idea to expand (1-3 sentences describing the core concept)
+    
+    Returns:
+        String with comprehensive expansion including implementation details
+    
+    Example:
+        >>> expand_idea_detailed("A mobile app that gamifies recycling by giving points for scanned items")
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    result = ""
+    for chunk in skill.expand_idea(idea, expansion_type="detailed"):
+        result += chunk
+    return result
+
+
+@skill_tool(
+    name="expand_idea_technical",
+    description="Expand an idea from a technical perspective with architecture, technologies, and implementation details.",
+    return_direct=False
+)
+def expand_idea_technical(idea: str) -> str:
+    """
+    Expand an idea with technical analysis
+    
+    Args:
+        idea: The idea to expand with technical details
+    
+    Returns:
+        String with technical architecture, stack, and implementation approach
+    
+    Example:
+        >>> expand_idea_technical("An AI-powered platform for personalized learning paths")
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    result = ""
+    for chunk in skill.expand_idea(idea, expansion_type="technical"):
+        result += chunk
+    return result
+
+
+@skill_tool(
+    name="expand_idea_business",
+    description="Expand an idea from a business perspective with market analysis, revenue models, and ROI.",
+    return_direct=False
+)
+def expand_idea_business(idea: str) -> str:
+    """
+    Expand an idea with business analysis
+    
+    Args:
+        idea: The idea to expand with business analysis
+    
+    Returns:
+        String with market opportunity, business model, competitive analysis, and financials
+    
+    Example:
+        >>> expand_idea_business("A subscription service for curated local experiences")
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    result = ""
+    for chunk in skill.expand_idea(idea, expansion_type="business"):
+        result += chunk
+    return result
+
+
+@skill_tool(
+    name="expand_idea_creative",
+    description="Expand an idea creatively with variations, alternatives, and innovative extensions.",
+    return_direct=False
+)
+def expand_idea_creative(idea: str) -> str:
+    """
+    Expand an idea with creative variations
+    
+    Args:
+        idea: The idea to expand creatively
+    
+    Returns:
+        String with creative variations, alternative approaches, and innovative extensions
+    
+    Example:
+        >>> expand_idea_creative("A social network for book lovers")
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return "❌ Error: NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/"
+    
+    result = ""
+    for chunk in skill.expand_idea(idea, expansion_type="creative"):
+        result += chunk
+    return result
+
+
+@skill_tool(
+    name="save_generated_ideas",
+    description="Save generated ideas to a markdown file in the ideas/ directory.",
+    return_direct=False
+)
+def save_generated_ideas(topic: str, ideas_content: str) -> Dict[str, Any]:
+    """
+    Save ideas to file for later reference
+    
+    Args:
+        topic: Topic of the ideas (used for filename)
+        ideas_content: The ideas text to save
+    
+    Returns:
+        Dictionary with file path and success status
+    
+    Example:
+        >>> ideas = generate_ideas("AI applications", 5)
+        >>> save_generated_ideas("AI applications", ideas)
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return {
+            "error": "NVIDIA_API_KEY not set. Get your key at https://build.nvidia.com/",
+            "success": False
+        }
+    
+    try:
+        filepath = skill.save_ideas(topic, ideas_content)
+        return {
+            "success": True,
+            "file_path": filepath,
+            "message": f"✅ Ideas saved to: {filepath}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error saving ideas: {str(e)}"
+        }
+
+
+@skill_tool(
+    name="list_saved_ideas",
+    description="List all previously saved idea files with metadata.",
+    return_direct=False
+)
+def list_saved_ideas() -> Dict[str, Any]:
+    """
+    List all saved ideas in the ideas/ directory
+    
+    Returns:
+        Dictionary with list of saved idea files and metadata
+    
+    Example:
+        >>> list_saved_ideas()
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return {
+            "error": "Skill not initialized",
+            "ideas": []
+        }
+    
+    try:
+        ideas_list = skill.list_saved_ideas()
+        return {
+            "success": True,
+            "count": len(ideas_list),
+            "ideas": ideas_list
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error listing ideas: {str(e)}",
+            "ideas": []
+        }
+
+
+@skill_tool(
+    name="get_ideagen_skill_info",
+    description="Get information about the idea generation skill capabilities and status",
+    return_direct=False
+)
+def get_ideagen_skill_info() -> Dict[str, Any]:
+    """
+    Get metadata about the NVIDIA idea generation skill
+    
+    Returns:
+        Dictionary with skill information including capabilities, model, and configuration
+    """
+    skill = _get_skill_instance()
+    if skill is None:
+        return {
+            "error": "Skill not initialized - NVIDIA_API_KEY not set",
+            "name": "nvidia-ideagen",
+            "status": "not_initialized"
+        }
+    
+    return skill.get_skill_info()
 
 
 # Convenience function

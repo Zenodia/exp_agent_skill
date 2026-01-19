@@ -97,20 +97,9 @@ ExpAgentSkill/
 │   ├── README.md                  # Documentation
 │   ├── examples.md                # Usage examples
 │   └── requirements.txt           # Dependencies
-│
-├── ideagen_skill.py               # Idea generation implementation (root level)
-├── test_ideagen_skill.py          # Agent Skills compliance tests
-├── test_skill.py                  # Comprehensive skill testing
-│
+│── test_skill.py                  # Comprehensive skill testing
 ├── gradio_agent_chatbot.py        # Gradio app: Agent Skills Chatbot (RECOMMENDED)
-├── launch_gradio_app.py           # Launcher with pre-flight checks
-├── excalidraw_gradio_app.py       # Gradio app: Drawing + Idea Generation
-├── calendar_gradio_app_with_skill.py  # Gradio app: Calendar Assistant
-│
 ├── requirements_gradio.txt        # Chatbot dependencies
-├── requirements_excalidraw.txt    # Excalidraw app dependencies
-├── GRADIO_APP_README.md           # Chatbot documentation
-├── AGENT_SKILLS_INTEGRATION.md    # Integration guide
 └── README.md                      # This file
 ```
 

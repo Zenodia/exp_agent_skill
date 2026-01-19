@@ -1,0 +1,183 @@
+# Example: Full Custom Skill Configuration
+# This demonstrates the "Full Custom" tier with customized task agents
+# Based on AI Planner integration patterns
+
+# Skill metadata for selection
+name: example-optimizer
+version: 1.0.0
+description: An example optimization skill demonstrating custom task agent architecture with specialized agents for data preparation, optimization, and explanation.
+
+# Access Control
+user_group: 
+  - engineering-team
+  - data-science-team
+admin_group:
+  - ai-planner-admins
+
+# Skill Type: custom (Full Custom tier)
+skill_type: custom
+
+# Custom Skill Settings
+custom_settings:
+  # Define custom task agents with specific roles and instructions
+  task_agents:
+    # Data Preparation Agent
+    - name: data_preparer
+      role: "Data analyst and preparation specialist"
+      instructions: |
+        You are a data preparation expert. Your role is to:
+        1. Understand the data requirements for optimization
+        2. Validate data quality and completeness
+        3. Transform and prepare data for the optimizer
+        4. Handle missing values and outliers
+        5. Ensure data meets optimization constraints
+        
+        Always validate data before passing to the optimizer.
+      tools:
+        - load_dataset
+        - validate_data
+        - transform_data
+        - read_reference  # Built-in resource tool
+        - read_asset      # Built-in resource tool
+      temperature: 0.3  # Conservative for data work
+      max_iterations: 5
+    
+    # Optimization Agent
+    - name: optimizer
+      role: "Optimization engine specialist"
+      instructions: |
+        You are an optimization expert. Your role is to:
+        1. Receive prepared data from the data_preparer
+        2. Select appropriate optimization algorithms
+        3. Configure and run optimization
+        4. Validate optimization results
+        5. Handle infeasibility and edge cases
+        
+        Use cuOpt or other solvers as appropriate.
+        Always check solution feasibility before returning results.
+      tools:
+        - run_optimization
+        - validate_solution
+        - adjust_parameters
+      temperature: 0.2  # Very conservative for optimization
+      max_iterations: 10
+    
+    # Explanation Agent
+    - name: explainer
+      role: "Results interpreter and communicator"
+      instructions: |
+        You are an expert at explaining optimization results. Your role is to:
+        1. Receive optimization results from the optimizer
+        2. Interpret results in business terms
+        3. Generate visualizations and summaries
+        4. Explain trade-offs and decisions
+        5. Provide actionable recommendations
+        
+        Make technical results accessible to non-technical stakeholders.
+      tools:
+        - generate_summary
+        - create_visualization
+        - explain_decision
+        - list_resources  # Built-in resource tool
+      temperature: 0.6  # Balanced for explanations
+      max_iterations: 3
+  
+  # Agent Coordination Strategy
+  coordination:
+    type: "sequential"  # or "hierarchical", "parallel"
+    flow:
+      - data_preparer -> optimizer
+      - optimizer -> explainer
+    error_handling: "retry_with_context"  # or "fail_fast", "ask_user"
+  
+  # Dataset Registry
+  datasets:
+    - name: historical_data
+      type: asset
+      path: assets/historical_data.csv
+      description: "Historical optimization data for training and validation"
+      access_control: user_group
+    
+    - name: constraints_library
+      type: reference
+      path: references/constraints.md
+      description: "Standard constraints and their mathematical formulations"
+      access_control: all
+    
+    - name: optimization_guide
+      type: reference
+      path: references/optimization_best_practices.md
+      description: "Best practices for optimization problems"
+      access_control: all
+    
+    - name: example_problems
+      type: asset
+      path: assets/example_problems/
+      description: "Collection of example optimization problems"
+      access_control: user_group
+
+# Runtime configuration
+runtime:
+  type: python
+  version: ">=3.10"
+  entry_point: scripts/optimizer_skill.py
+
+# Dependencies
+dependencies:
+  - numpy>=1.24.0
+  - pandas>=2.0.0
+  - PyYAML>=6.0
+  - langchain>=0.1.0
+  - pydantic>=2.0.0
+  # - cuopt  # NVIDIA cuOpt (if available)
+
+# Environment variables
+environment:
+  NVIDIA_API_KEY:
+    description: NVIDIA API key for LLM-based agents
+    required: true
+  OPTIMIZATION_BACKEND:
+    description: "Optimization backend to use (cuopt, scipy, ortools)"
+    required: false
+    default: scipy
+  MAX_OPTIMIZATION_TIME:
+    description: "Maximum time for optimization in seconds"
+    required: false
+    default: 300
+
+# Permissions required by this skill
+permissions:
+  - file:read
+  - file:write
+  - network:api
+  - compute:gpu  # Optional GPU for cuOpt
+
+# Tags for skill categorization
+tags:
+  - optimization
+  - operations-research
+  - cuopt
+  - data-analysis
+  - custom-agents
+
+# Monitoring and Logging
+monitoring:
+  enable_logging: true
+  log_level: INFO
+  track_performance: true
+  metrics:
+    - optimization_time
+    - solution_quality
+    - constraint_violations
+
+# License
+license: MIT
+author: Example Team
+
+# Documentation links
+documentation:
+  readme: README.md
+  examples: examples.md
+  skill_instructions: SKILL.md
+  api_docs: docs/api.md
+

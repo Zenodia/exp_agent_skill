@@ -1,16 +1,17 @@
 """
 Calendar Assistant Agent Skill
-Agent Skills API Compliant
+Agent Skills API Compliant with NAT Integration
 
 This is the implementation code that gets called after the agent
 reads the SKILL.md instructions and decides to use this skill.
 
 This module provides the CalendarAssistantSkill class for creating and managing
 calendar events from natural language or structured inputs. Compliant with
-Agent Skills Python API specification.
+Agent Skills Python API specification and NAT tool auto-discovery.
 """
 
 import os
+import sys
 from datetime import datetime, timedelta
 from icalendar import Calendar, Event, vCalAddress, vText, Alarm
 from pathlib import Path
@@ -18,6 +19,28 @@ import zoneinfo
 import json
 import hashlib
 from typing import Dict, List, Optional, Tuple, Any
+
+# Import skill_tool decorator from skill_loader
+# Handle import whether running as module or standalone
+try:
+    from skill_loader import skill_tool
+except ImportError:
+    # Fallback: Add parent directory to path
+    parent_dir = Path(__file__).parent.parent.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    try:
+        from skill_loader import skill_tool
+    except ImportError:
+        # If still can't import, define a dummy decorator
+        def skill_tool(name=None, description=None, return_direct=False):
+            def decorator(func):
+                func._is_skill_tool = True
+                func._tool_name = name or func.__name__
+                func._tool_description = description or func.__doc__ or ""
+                func._tool_return_direct = return_direct
+                return func
+            return decorator
 
 try:
     from langchain_nvidia_ai_endpoints import ChatNVIDIA
@@ -630,6 +653,225 @@ def create_skill_instance(api_key: Optional[str] = None, **kwargs) -> CalendarAs
         CalendarAssistantSkill instance
     """
     return CalendarAssistantSkill(api_key=api_key, **kwargs)
+
+
+# ============================================================================
+# NAT Auto-Discovery Tool Functions
+# These @skill_tool decorated functions are auto-discovered by the skill loader
+# ============================================================================
+
+# Global skill instance for tool functions
+_global_skill_instance = None
+
+def _get_skill_instance():
+    """Get or create the global skill instance"""
+    global _global_skill_instance
+    if _global_skill_instance is None:
+        api_key = os.getenv("NVIDIA_API_KEY")
+        _global_skill_instance = CalendarAssistantSkill(api_key=api_key)
+    return _global_skill_instance
+
+
+@skill_tool(
+    name="parse_calendar_event",
+    description="Parse natural language into structured calendar event data. Returns event details as a dictionary.",
+    return_direct=False
+)
+def parse_calendar_event(
+    user_input: str,
+    reference_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Parse natural language calendar request into structured data
+    
+    Args:
+        user_input: Natural language description (e.g., "meeting tomorrow at 2pm for 2 hours")
+        reference_date: Optional reference date in YYYY-MM-DD format (defaults to today)
+    
+    Returns:
+        Dictionary with parsed event data or error message
+    
+    Examples:
+        >>> parse_calendar_event("team meeting tomorrow at 2pm")
+        >>> parse_calendar_event("lunch appointment on Friday at noon", "2026-01-20")
+    """
+    skill = _get_skill_instance()
+    
+    # Parse reference date if provided
+    ref_dt = None
+    if reference_date:
+        try:
+            ref_dt = datetime.strptime(reference_date, '%Y-%m-%d')
+            ref_dt = ref_dt.replace(tzinfo=zoneinfo.ZoneInfo(skill.default_timezone))
+        except ValueError:
+            return {"error": f"Invalid reference_date format: {reference_date}. Use YYYY-MM-DD"}
+    
+    event_data, error = skill.parse_natural_language(user_input, reference_date=ref_dt)
+    
+    if error:
+        return {"error": error}
+    
+    return event_data
+
+
+@skill_tool(
+    name="create_ics_file",
+    description="Create an iCalendar (ICS) file from event data. Returns file path or error.",
+    return_direct=False
+)
+def create_ics_file(
+    summary: str,
+    start_date: str,
+    start_time: str = "09:00",
+    duration_hours: float = 1.0,
+    description: str = "",
+    location: str = "",
+    reminder_hours: float = 1.0,
+    output_filename: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Create an ICS calendar file from structured event data
+    
+    Args:
+        summary: Event title (required)
+        start_date: Start date in YYYY-MM-DD format (required)
+        start_time: Start time in HH:MM format (default: 09:00)
+        duration_hours: Event duration in hours (default: 1.0)
+        description: Event description (optional)
+        location: Event location (optional)
+        reminder_hours: Hours before event to remind (default: 1.0)
+        output_filename: Custom filename for ICS file (optional)
+    
+    Returns:
+        Dictionary with file path and success status
+    
+    Examples:
+        >>> create_ics_file("Team Meeting", "2026-01-21", "14:00", 2.0)
+        >>> create_ics_file("Lunch", "2026-01-22", "12:00", location="Downtown Cafe")
+    """
+    skill = _get_skill_instance()
+    
+    try:
+        # Parse date and time
+        event_date = datetime.strptime(start_date, '%Y-%m-%d')
+        hour, minute = map(int, start_time.split(':'))
+        event_date = event_date.replace(hour=hour, minute=minute)
+        event_date = event_date.replace(tzinfo=zoneinfo.ZoneInfo(skill.default_timezone))
+        
+        # Create ICS content
+        ics_content = skill.create_calendar_event(
+            summary=summary,
+            start_datetime=event_date,
+            duration_hours=duration_hours,
+            description=description,
+            location=location,
+            reminder_hours=reminder_hours
+        )
+        
+        # Determine output filename
+        if not output_filename:
+            safe_summary = "".join(c for c in summary if c.isalnum() or c in (' ', '_')).strip()
+            safe_summary = safe_summary.replace(' ', '_')[:50]
+            output_filename = f"{safe_summary}_{start_date}.ics"
+        
+        # Ensure .ics extension
+        if not output_filename.endswith('.ics'):
+            output_filename += '.ics'
+        
+        # Save file
+        output_path = Path(output_filename)
+        output_path.write_bytes(ics_content)
+        
+        return {
+            "success": True,
+            "file_path": str(output_path.absolute()),
+            "file_size": len(ics_content),
+            "event_summary": summary,
+            "start_datetime": f"{start_date} {start_time}"
+        }
+        
+    except ValueError as e:
+        return {"error": f"Invalid date/time format: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Error creating ICS file: {str(e)}"}
+
+
+@skill_tool(
+    name="natural_language_to_calendar",
+    description="Complete pipeline: parse natural language and create ICS file in one step. Most convenient for users.",
+    return_direct=False
+)
+def natural_language_to_calendar(
+    user_input: str,
+    output_filename: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Parse natural language and create ICS file in one step
+    
+    Args:
+        user_input: Natural language event description
+        output_filename: Optional custom filename for ICS file
+    
+    Returns:
+        Dictionary with file path, event details, and success status
+    
+    Examples:
+        >>> natural_language_to_calendar("Schedule team meeting tomorrow at 2pm for 2 hours")
+        >>> natural_language_to_calendar("Dentist appointment Friday at 10:30am", "dentist.ics")
+    """
+    skill = _get_skill_instance()
+    
+    # Parse natural language
+    ics_content, error, parsed_data = skill.natural_language_to_ics(user_input)
+    
+    if error:
+        return {"error": error}
+    
+    try:
+        # Determine output filename
+        if not output_filename and parsed_data:
+            summary = parsed_data.get('summary', 'event')
+            safe_summary = "".join(c for c in summary if c.isalnum() or c in (' ', '_')).strip()
+            safe_summary = safe_summary.replace(' ', '_')[:50]
+            start_date = parsed_data.get('start_date', 'unknown')
+            output_filename = f"{safe_summary}_{start_date}.ics"
+        elif not output_filename:
+            output_filename = f"event_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ics"
+        
+        # Ensure .ics extension
+        if not output_filename.endswith('.ics'):
+            output_filename += '.ics'
+        
+        # Save file
+        output_path = Path(output_filename)
+        output_path.write_bytes(ics_content)
+        
+        return {
+            "success": True,
+            "file_path": str(output_path.absolute()),
+            "file_size": len(ics_content),
+            "parsed_data": parsed_data,
+            "message": f"✅ Calendar event created: {output_path.name}"
+        }
+        
+    except Exception as e:
+        return {"error": f"Error saving ICS file: {str(e)}"}
+
+
+@skill_tool(
+    name="get_calendar_skill_info",
+    description="Get information about the calendar skill capabilities and status",
+    return_direct=False
+)
+def get_calendar_skill_info() -> Dict[str, Any]:
+    """
+    Get metadata about the calendar assistant skill
+    
+    Returns:
+        Dictionary with skill information including capabilities, status, and configuration
+    """
+    skill = _get_skill_instance()
+    return skill.get_skill_info()
 
 
 # Example usage function for testing

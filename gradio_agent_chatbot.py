@@ -1,47 +1,53 @@
 #!/usr/bin/env python3
 """
-Agent Skills Chatbot - Gradio Demo
+Agent Skills Chatbot - Enhanced with SkillLoader Integration
 Demonstrates agentic tool usage with skill discovery and execution
-Following Agent Skills API specification: https://github.com/agentskills/agentskills
+Now using skill_loader.py for OpenSkills + AI Planner integration
 """
 
 import os
 import sys
 import re
-import yaml
-import json
 import gradio as gr
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import List, Optional, Tuple
 from openai import OpenAI
 from datetime import datetime
-import zoneinfo
-import tiktoken
-from colorama import Fore, Style
 import tempfile
 
-# Import skills for actual execution
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'calendar_assistant_skill', 'scripts'))
+# Import the new SkillLoader infrastructure
+from skill_loader import SkillLoader
+
+# Import skills for direct execution
+sys.path.insert(0, str(Path(__file__).parent / 'calendar_assistant_skill' / 'scripts'))
 from calendar_skill import CalendarAssistantSkill
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nvidia_ideagen_skill', 'scripts'))
+sys.path.insert(0, str(Path(__file__).parent / 'nvidia_ideagen_skill' / 'scripts'))
 from ideagen_skill import NvidiaIdeaGenSkill
 
-class AgentSkillsOrchestrator:
+
+class AgentSkillsChatbot:
     """
-    Orchestrator for discovering and managing Agent Skills
-    Following Agent Skills API specification for prompt integration
+    Enhanced Agent Skills Chatbot using SkillLoader
+    
+    Implements the 5-step Agent Skills integration process:
+    1. Discover skills in configured directories
+    2. Load metadata (name and description) at startup
+    3. Match user tasks to relevant skills
+    4. Activate skills by loading full instructions
+    5. Execute scripts and access resources as needed
+    
+    Reference: https://agentskills.io/integrate-skills#overview
     """
     
-    def __init__(self, skills_directories: List[str], api_key: Optional[str] = None):
+    def __init__(self, skills_base_path: str, api_key: Optional[str] = None):
         """
-        Initialize the orchestrator with skill directories
+        Initialize chatbot with SkillLoader
         
         Args:
-            skills_directories: List of directory paths to scan for skills
+            skills_base_path: Base path containing skill directories
             api_key: NVIDIA API key (defaults to NVIDIA_API_KEY env var)
         """
-        self.skills_directories = [Path(d) for d in skills_directories]
         self.api_key = api_key or os.getenv("NVIDIA_API_KEY")
         
         if not self.api_key:
@@ -50,133 +56,64 @@ class AgentSkillsOrchestrator:
                 "Get your key at: https://build.nvidia.com/"
             )
         
+        # STEP 1: Discover skills in configured directories
+        print(f"🔍 Step 1: Discovering skills from: {skills_base_path}")
+        self.skill_loader = SkillLoader(Path(skills_base_path))
+        
+        # STEP 2: Load metadata (name and description) at startup
+        print(f"📋 Step 2: Loading metadata at startup")
+        self.skills = self.skill_loader.list_skills()
+        print(f"✅ Discovered {len(self.skills)} skill(s):")
+        for skill in self.skills:
+            print(f"   📦 {skill.name} - {skill.skill_type}")
+            print(f"      {skill.description[:80]}...")
+        
         # Initialize OpenAI client with NVIDIA endpoint
         self.client = OpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=self.api_key
         )
-        
         self.model = "nvidia/llama-3.1-nemotron-nano-8b-v1"
         
-        # Initialize calendar skill for actual execution
+        # Initialize skill instances for direct execution (Step 5 preparation)
+        self._init_skill_instances()
+    
+    def _init_skill_instances(self):
+        """Initialize skill instances for direct execution"""
+        # Calendar skill
         try:
             self.calendar_skill = CalendarAssistantSkill(api_key=self.api_key)
-            print("✅ Calendar skill initialized for direct execution")
+            print("✅ Calendar skill initialized for execution")
         except Exception as e:
             print(f"⚠️  Calendar skill initialization failed: {e}")
             self.calendar_skill = None
         
-        # Initialize nvidia-ideagen skill for actual execution
+        # IdeaGen skill
         try:
             self.ideagen_skill = NvidiaIdeaGenSkill(api_key=self.api_key)
-            print("✅ NVIDIA IdeaGen skill initialized for direct execution")
+            print("✅ IdeaGen skill initialized for execution")
         except Exception as e:
-            print(f"⚠️  NVIDIA IdeaGen skill initialization failed: {e}")
+            print(f"⚠️  IdeaGen skill initialization failed: {e}")
             self.ideagen_skill = None
-        
-        # Discover skills at startup
-        self.skills = self.discover_all_skills()
-        print(f"\n✅ Discovered {len(self.skills)} skills: {list(self.skills.keys())}")
     
-    def discover_all_skills(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Discover all Agent Skills in configured directories
-        
-        Following Agent Skills spec:
-        1. Scan configured directories for SKILL.md files
-        2. Parse only the frontmatter (name and description) at startup
-        3. Keep initial context usage low (~50-100 tokens per skill)
-        
-        Returns:
-            Dict of skill_name -> skill_metadata
-        """
-        skills = {}
-        
-        for directory in self.skills_directories:
-            if not directory.exists():
-                continue
-            
-            # Find all SKILL.md files
-            for skill_md in directory.rglob("SKILL.md"):
-                try:
-                    skill_data = self._parse_skill_md(skill_md)
-                    if skill_data:
-                        skill_name = skill_data['name']
-                        skills[skill_name] = skill_data
-                except Exception as e:
-                    print(f"⚠️  Error parsing {skill_md}: {e}")
-                    continue
-        
-        return skills
+    # ========================================================================
+    # STEP 3: Match user tasks to relevant skills
+    # Reference: https://agentskills.io/integrate-skills#overview
+    # ========================================================================
     
-    def _parse_skill_md(self, skill_md_path: Path) -> Optional[Dict[str, Any]]:
+    def step3_match_skill(self, user_query: str) -> Tuple[Optional[str], dict]:
         """
-        Parse SKILL.md file for metadata and instructions
+        STEP 3: Match user task to relevant skill
         
-        Args:
-            skill_md_path: Path to SKILL.md file
-            
-        Returns:
-            Dict with metadata, or None if parsing fails
-        """
-        with open(skill_md_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Extract YAML frontmatter
-        if not content.startswith("---"):
-            return None
-        
-        parts = content.split("---", 2)
-        if len(parts) < 3:
-            return None
-        
-        try:
-            metadata = yaml.safe_load(parts[1])
-            # Store the full SKILL.md content (instructions) for later activation
-            metadata['full_instructions'] = parts[2].strip()
-            metadata['location'] = str(skill_md_path.absolute())
-            metadata['path'] = str(skill_md_path.parent.absolute())
-            return metadata
-        except yaml.YAMLError as e:
-            print(f"⚠️  YAML parsing error: {e}")
-            return None
-    
-    def build_available_skills_xml(self) -> str:
-        """
-        Generate the <available_skills> XML block for agent context injection
-        
-        This follows the Agent Skills specification:
-        https://agentskills.io/integrate-skills#injecting-into-context
-        
-        Returns:
-            XML string with skill metadata for system prompt
-        """
-        if not self.skills:
-            return ""
-        
-        xml_parts = ["<available_skills>"]
-        
-        for skill_name, skill_data in self.skills.items():
-            print(f"skillname:{skill_name},\n skill_data:{skill_data['location']}")
-            xml_parts.append(f"""  <skill>
-    <name>{skill_name}</name>
-    <description>{skill_data['description']}</description>
-    <location>{skill_data['location']}</location>
-  </skill>""")
-        
-        xml_parts.append("</available_skills>")
-        
-        return "\n".join(xml_parts)
-    
-    def detect_skill_trigger(self, user_query: str) -> Optional[str]:
-        """
-        Detect which skill (if any) should be triggered based on user query
+        Analyzes user query and scores each skill based on keyword matching
+        and semantic similarity to skill descriptions.
         
         Args:
             user_query: User's question or request
             
         Returns:
-            Skill name if matched, None otherwise
+            Tuple of (skill_name, match_info_dict)
+            match_info includes: score, matched_keywords, reasoning
         """
         query_lower = user_query.lower()
         
@@ -184,49 +121,103 @@ class AgentSkillsOrchestrator:
         triggers = {
             'calendar-assistant': [
                 'calendar', 'meeting', 'appointment', 'schedule', 'event',
-                'book', 'create event', 'add to calendar', 'set up meeting'
+                'book', 'create event', 'add to calendar', 'set up meeting',
+                'remind', 'deadline'
             ],
             'nvidia-ideagen': [
                 'idea', 'brainstorm', 'generate ideas', 'creative', 'concept',
-                'ideation', 'innovation', 'suggest', 'come up with'
+                'ideation', 'innovation', 'suggest', 'come up with', 'think of'
             ]
         }
         
-        # Score each skill based on trigger keyword matches
+        # Score each discovered skill based on trigger keyword matches
         skill_scores = {}
-        for skill_name, keywords in triggers.items():
-            if skill_name in self.skills:
-                score = sum(1 for kw in keywords if kw in query_lower)
+        skill_matches = {}
+        
+        for skill in self.skills:
+            if skill.name in triggers:
+                keywords = triggers[skill.name]
+                matched_kw = [kw for kw in keywords if kw in query_lower]
+                score = len(matched_kw)
+                
                 if score > 0:
-                    skill_scores[skill_name] = score
+                    skill_scores[skill.name] = score
+                    skill_matches[skill.name] = {
+                        'score': score,
+                        'matched_keywords': matched_kw,
+                        'description': skill.description[:100]
+                    }
         
         # Return skill with highest score
         if skill_scores:
-            return max(skill_scores, key=skill_scores.get)
+            best_skill = max(skill_scores, key=skill_scores.get)
+            match_info = skill_matches[best_skill]
+            match_info['reasoning'] = f"Matched {match_info['score']} keyword(s): {', '.join(match_info['matched_keywords'][:3])}"
+            return best_skill, match_info
         
-        return None
+        return None, {'reasoning': 'No skill matched the query'}
+    
+    # ========================================================================
+    # STEP 4: Activate skills by loading full instructions
+    # Reference: https://agentskills.io/integrate-skills#overview
+    # ========================================================================
+    
+    def step4_activate_skill(self, skill_name: str) -> dict:
+        """
+        STEP 4: Activate skill by loading full instructions
+        
+        Loads the complete SKILL.md content including all instructions,
+        capabilities, and usage guidelines.
+        
+        Args:
+            skill_name: Name of skill to activate
+            
+        Returns:
+            Dict with activation info: instructions_loaded, content_length, capabilities
+        """
+        skill = self.skill_loader.get_skill(skill_name)
+        
+        if not skill:
+            return {
+                'success': False,
+                'error': f"Skill '{skill_name}' not found",
+                'instructions_loaded': False
+            }
+        
+        activation_info = {
+            'success': True,
+            'skill_name': skill_name,
+            'skill_type': skill.skill_type,
+            'instructions_loaded': bool(skill.skill_md_content),
+            'content_length': len(skill.skill_md_content) if skill.skill_md_content else 0,
+            'has_config': bool(skill.config),
+            'has_references': (skill.skill_path / 'references').exists(),
+            'has_assets': (skill.skill_path / 'assets').exists()
+        }
+        
+        # Check for tools
+        tools = self.skill_loader.discover_tools(skill_name)
+        activation_info['tools_discovered'] = len(tools)
+        activation_info['tool_names'] = [t._tool_name for t in tools[:5]]  # First 5
+        
+        return activation_info
     
     def build_system_prompt(
         self, 
-        activated_skill: Optional[str] = None,
-        include_full_instructions: bool = True
+        activated_skill: Optional[str] = None
     ) -> str:
         """
-        Build the complete system prompt with Agent Skills integration
-        
-        Following Agent Skills specification:
-        1. Always include available_skills metadata
-        2. If a skill is activated, include its full SKILL.md instructions
+        Build system prompt with skills XML from SkillLoader
+        Includes activated skill's full instructions if provided
         
         Args:
             activated_skill: Name of skill to activate (if any)
-            include_full_instructions: Whether to include full skill instructions
             
         Returns:
             Complete system prompt string
         """
         # Base system prompt
-        base_prompt = """You are an intelligent AI assistant with access to specialized skills.
+        base_prompt = f"""You are an intelligent AI assistant with access to specialized skills.
 
 When responding to user queries:
 1. Analyze if the query matches any available skill's purpose
@@ -234,48 +225,151 @@ When responding to user queries:
 3. Use the skill's capabilities to provide accurate, helpful responses
 4. If no skill matches, respond normally using your general knowledge
 
-Current date for reference: {current_date}
-Current time for reference: {current_time}
-""".format(
-            current_date=datetime.now().strftime("%Y-%m-%d"),
-            current_time=datetime.now().strftime("%H:%M:%S")
-        )
+Current date: {datetime.now().strftime("%Y-%m-%d")}
+Current time: {datetime.now().strftime("%H:%M:%S")}
+
+"""
         
-        # Initialize token encoder for counting
-        encoding = tiktoken.get_encoding("cl100k_base")
+        # Add skills XML from SkillLoader
+        skills_xml = self.skill_loader.generate_skills_xml()
+        prompt = base_prompt + skills_xml + "\n"
         
-        # Add available skills metadata
-        skills_xml = self.build_available_skills_xml()
-        
-        # Count tokens
-        cnt_base_prompt = len(encoding.encode(base_prompt))
-        cnt_skill_prompt = len(encoding.encode(skills_xml))
-        
-        print(Fore.YELLOW + "base_prompt token count: " + str(cnt_base_prompt) + Style.RESET_ALL)
-        print(Fore.BLUE + "skills_xml token count: " + str(cnt_skill_prompt) + Style.RESET_ALL)
-        print(Fore.GREEN + "Total system prompt token count: " + str(cnt_base_prompt + cnt_skill_prompt) + Style.RESET_ALL)
-        
-        prompt = base_prompt + "\n" + skills_xml + "\n"
-        
-        # If a skill is activated, add its full instructions
-        if activated_skill and activated_skill in self.skills and include_full_instructions:
-            skill_data = self.skills[activated_skill]
-            prompt += f"\n# ACTIVATED SKILL: {activated_skill}\n\n"
-            prompt += "## Skill Instructions:\n\n"
-            prompt += skill_data['full_instructions']
-            prompt += "\n\n## End of Skill Instructions\n"
-            prompt += f"\nYou MUST follow the above skill instructions for this query.\n"
+        # If a skill is activated, add its full SKILL.md content
+        if activated_skill:
+            skill = self.skill_loader.get_skill(activated_skill)
+            if skill and skill.skill_md_content:
+                prompt += f"\n# ACTIVATED SKILL: {activated_skill}\n\n"
+                prompt += "## Skill Instructions:\n\n"
+                prompt += skill.skill_md_content
+                prompt += "\n\n## End of Skill Instructions\n"
+                prompt += f"\nYou MUST follow the above skill instructions for this query.\n"
         
         return prompt
+    
+    # ========================================================================
+    # STEP 5: Execute scripts and access resources as needed
+    # Reference: https://agentskills.io/integrate-skills#overview
+    # ========================================================================
+    
+    def step5_execute_calendar_skill(self, user_query: str) -> dict:
+        """
+        STEP 5: Execute calendar skill scripts and access resources
+        
+        Args:
+            user_query: User's calendar request
+            
+        Returns:
+            Dict with execution results: success, output, resources_used
+        """
+        if not self.calendar_skill:
+            return {
+                'success': False,
+                'error': 'Calendar skill not available',
+                'resources_used': []
+            }
+        
+        execution_info = {
+            'tool_used': 'natural_language_to_ics',
+            'resources_used': [],
+            'execution_time': datetime.now().isoformat()
+        }
+        
+        try:
+            ics_content, error, parsed_data = self.calendar_skill.natural_language_to_ics(user_query)
+            
+            if error:
+                execution_info['success'] = False
+                execution_info['error'] = error
+                return execution_info
+            
+            execution_info['success'] = True
+            execution_info['parsed_data'] = parsed_data
+            execution_info['output_size'] = len(ics_content)
+            execution_info['ics_content'] = ics_content
+            
+            # Check what resources were potentially accessed
+            skill = self.skill_loader.get_skill('calendar-assistant')
+            if skill:
+                if (skill.skill_path / 'references').exists():
+                    execution_info['resources_used'].append('references/ available')
+                if (skill.skill_path / 'assets').exists():
+                    execution_info['resources_used'].append('assets/ available')
+            
+            return execution_info
+        
+        except Exception as e:
+            execution_info['success'] = False
+            execution_info['error'] = str(e)
+            return execution_info
+    
+    def step5_execute_ideagen_skill(self, user_query: str, temperature: float):
+        """
+        STEP 5: Execute IdeaGen skill scripts with streaming
+        
+        Args:
+            user_query: User's idea generation request
+            temperature: Creativity level
+            
+        Yields:
+            Tuple of (chunk, execution_info)
+        """
+        if not self.ideagen_skill:
+            yield "❌ IdeaGen skill not available", {'success': False, 'error': 'Skill not available'}
+            return
+        
+        execution_info = {
+            'tool_used': 'generate_ideas_stream',
+            'resources_used': [],
+            'execution_time': datetime.now().isoformat(),
+            'success': True
+        }
+        
+        try:
+            # Parse query to extract parameters
+            num_ideas_match = re.search(r'(\d+)\s+ideas?', user_query.lower())
+            num_ideas = int(num_ideas_match.group(1)) if num_ideas_match and 1 <= int(num_ideas_match.group(1)) <= 10 else 5
+            
+            # Extract topic
+            topic = re.sub(r'generate|brainstorm|give me|create|come up with|i need', '', user_query, flags=re.IGNORECASE)
+            topic = re.sub(r'\d+\s+ideas?\s+(for|about|on)?', '', topic, flags=re.IGNORECASE)
+            topic = topic.strip() or user_query
+            
+            execution_info['parameters'] = {
+                'topic': topic,
+                'num_ideas': num_ideas,
+                'creativity': temperature
+            }
+            
+            # Check what resources are available
+            skill = self.skill_loader.get_skill('nvidia-ideagen')
+            if skill:
+                if (skill.skill_path / 'references').exists():
+                    execution_info['resources_used'].append('references/ available')
+                if (skill.skill_path / 'assets').exists():
+                    execution_info['resources_used'].append('assets/ available')
+            
+            # Stream ideas generation
+            for chunk in self.ideagen_skill.generate_ideas_stream(
+                topic=topic,
+                num_ideas=num_ideas,
+                creativity=temperature
+            ):
+                yield chunk, execution_info
+        
+        except Exception as e:
+            execution_info['success'] = False
+            execution_info['error'] = str(e)
+            yield f"❌ Error executing idea generation skill: {str(e)}", execution_info
     
     def chat_stream(
         self, 
         user_query: str,
         temperature: float = 0.7,
         max_tokens: int = 4096
-    ) -> Tuple[str, str, Optional[bytes]]:
+    ):
         """
         Process user query with streaming response
+        Implements the 5-step Agent Skills process with visible progress
         
         Args:
             user_query: User's question or request
@@ -283,21 +377,97 @@ Current time for reference: {current_time}
             max_tokens: Maximum tokens to generate
             
         Yields:
-            Tuple of (response_chunk, activated_skill_name, ics_content_bytes)
+            Tuple of (response_chunk, step_info_dict, ics_content_bytes)
+            step_info includes: step, skill_name, details
         """
-        # Detect which skill to trigger
-        activated_skill = self.detect_skill_trigger(user_query)
+        # Display steps progress header
+        progress_header = """**🔄 Agent Skills Process**
         
-        # If calendar skill detected, execute it directly
-        if activated_skill == "calendar-assistant" and self.calendar_skill:
+Following the 5-step integration from [agentskills.io](https://agentskills.io/integrate-skills#overview):
+
+"""
+        yield progress_header, {'step': 'header'}, None
+        
+        # ===== STEP 1 & 2: Already done at startup =====
+        step_info = {
+            'step': 1,
+            'name': 'Discover & Load',
+            'status': 'completed',
+            'details': f'Found {len(self.skills)} skills: {", ".join([s.name for s in self.skills])}'
+        }
+        yield f"**✅ Steps 1-2: Discover & Load Metadata** - {step_info['details']}\n\n", step_info, None
+        
+        # ===== STEP 3: Match user task to relevant skill =====
+        step_info = {'step': 3, 'name': 'Match', 'status': 'in_progress'}
+        yield f"**⏳ Step 3: Matching Task to Skill** - Analyzing query...\n", step_info, None
+        
+        matched_skill, match_info = self.step3_match_skill(user_query)
+        
+        if matched_skill:
+            step_info['status'] = 'completed'
+            step_info['skill_name'] = matched_skill
+            step_info['details'] = match_info['reasoning']
+            yield f"**✅ Step 3: Match Complete** - Selected skill: `{matched_skill}` ({match_info['reasoning']})\n\n", step_info, None
+        else:
+            step_info['status'] = 'skipped'
+            step_info['details'] = match_info['reasoning']
+            yield f"**⊘ Step 3: No Skill Match** - {match_info['reasoning']}, using general AI response\n\n", step_info, None
+            
+            # No skill matched, use general LLM
+            system_prompt = self.build_system_prompt()
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query}
+            ]
+            
             try:
-                ics_content, error, parsed_data = self.calendar_skill.natural_language_to_ics(user_query)
+                completion = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    top_p=0.95,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
                 
-                if error:
-                    yield f"❌ Error creating calendar event: {error}\n\nPlease provide more details about the event.", activated_skill, None
-                    return
+                yield "**💬 Response:**\n\n", {'step': 'response'}, None
                 
+                for chunk in completion:
+                    if chunk.choices[0].delta.content is not None:
+                        yield chunk.choices[0].delta.content, {'step': 'response'}, None
+            except Exception as e:
+                yield f"\n\n❌ Error: {str(e)}", {'step': 'error'}, None
+            return
+        
+        # ===== STEP 4: Activate skill by loading full instructions =====
+        step_info = {'step': 4, 'name': 'Activate', 'status': 'in_progress', 'skill_name': matched_skill}
+        yield f"**⏳ Step 4: Activating Skill** - Loading `{matched_skill}` instructions...\n", step_info, None
+        
+        activation_info = self.step4_activate_skill(matched_skill)
+        
+        if activation_info['success']:
+            step_info['status'] = 'completed'
+            step_info['details'] = f"Loaded {activation_info['tools_discovered']} tools, {activation_info['content_length']} chars of instructions"
+            yield f"**✅ Step 4: Activation Complete** - {step_info['details']}\n\n", step_info, None
+        else:
+            step_info['status'] = 'failed'
+            step_info['error'] = activation_info.get('error', 'Unknown error')
+            yield f"**❌ Step 4: Activation Failed** - {step_info['error']}\n\n", step_info, None
+            return
+        
+        # ===== STEP 5: Execute scripts and access resources =====
+        step_info = {'step': 5, 'name': 'Execute', 'status': 'in_progress', 'skill_name': matched_skill}
+        yield f"**⏳ Step 5: Executing Skill** - Running `{matched_skill}` tools...\n\n", step_info, None
+        
+        yield "---\n\n**📤 Skill Output:**\n\n", {'step': 'output'}, None
+        
+        # Execute based on skill type
+        if matched_skill == "calendar-assistant":
+            exec_info = self.step5_execute_calendar_skill(user_query)
+            
+            if exec_info['success']:
                 # Generate success message
+                parsed_data = exec_info['parsed_data']
                 success_msg = f"""✅ **Calendar Event Created!**
 
 📅 **Event Details:**
@@ -309,141 +479,45 @@ Current time for reference: {current_time}
 - **Description:** {parsed_data.get('description', 'Not specified')}
 - **Reminder:** {parsed_data.get('reminder_hours', 1)} hours before
 
-📥 **How to Add to Your Calendar:**
-1. Click the **Download** button below
-2. Find the downloaded `.ics` file
-3. **Double-click** the file - it will open in your calendar app!
+📥 **Download the .ics file** using the button on the right →
 
-Or import manually into Google Calendar, Outlook, or Apple Calendar.
+---
 
-✨ The ICS file is ready for download and can be viewed in the preview panel!"""
+**ℹ️ Execution Info:** Used tool `{exec_info['tool_used']}`, generated {exec_info['output_size']} bytes"""
                 
-                yield success_msg, activated_skill, ics_content
-                return
-                
-            except Exception as e:
-                yield f"❌ Error executing calendar skill: {str(e)}", activated_skill, None
-                return
+                step_info['status'] = 'completed'
+                yield success_msg, step_info, exec_info['ics_content']
+            else:
+                step_info['status'] = 'failed'
+                yield f"❌ Error: {exec_info.get('error', 'Unknown error')}", step_info, None
         
-        # If nvidia-ideagen skill detected, execute it directly
-        if activated_skill == "nvidia-ideagen" and self.ideagen_skill:
-            try:
-                # Parse the query to extract number of ideas if specified
-                import re
-                num_ideas_match = re.search(r'(\d+)\s+ideas?', user_query.lower())
-                num_ideas = int(num_ideas_match.group(1)) if num_ideas_match and 1 <= int(num_ideas_match.group(1)) <= 10 else 5
-                
-                # Extract topic (remove the number of ideas part)
-                topic = re.sub(r'generate|brainstorm|give me|create|come up with|i need', '', user_query, flags=re.IGNORECASE)
-                topic = re.sub(r'\d+\s+ideas?\s+(for|about|on)?', '', topic, flags=re.IGNORECASE)
-                topic = topic.strip()
-                
-                if not topic:
-                    topic = user_query
-                
-                # Stream ideas generation
-                for chunk in self.ideagen_skill.generate_ideas_stream(
-                    topic=topic,
-                    num_ideas=num_ideas,
-                    creativity=temperature
-                ):
-                    yield chunk, activated_skill, None
-                
-                return
-                
-            except Exception as e:
-                yield f"❌ Error executing idea generation skill: {str(e)}", activated_skill, None
-                return
-        
-        # Build system prompt for other skills
-        system_prompt = self.build_system_prompt(activated_skill=activated_skill)
-        
-        # Build messages array
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_query}
-        ]
-        
-        # Stream response from LLM
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                top_p=0.95,
-                max_tokens=max_tokens,
-                frequency_penalty=0.1,
-                presence_penalty=0.1,
-                stream=True
-            )
+        elif matched_skill == "nvidia-ideagen":
+            for chunk, exec_info in self.step5_execute_ideagen_skill(user_query, temperature):
+                step_info['status'] = 'executing'
+                yield chunk, step_info, None
             
-            for chunk in completion:
-                if chunk.choices[0].delta.content is not None:
-                    yield chunk.choices[0].delta.content, activated_skill, None
-        
-        except Exception as e:
-            error_msg = f"\n\n❌ Error: {str(e)}\n\nPlease try again or check your API key."
-            yield error_msg, None, None
-    
-    def chat(
-        self, 
-        user_query: str,
-        temperature: float = 0.7,
-        max_tokens: int = 4096
-    ) -> Tuple[str, Optional[str], Optional[bytes]]:
-        """
-        Process user query (non-streaming version)
-        
-        Args:
-            user_query: User's question or request
-            temperature: LLM temperature (0-1)
-            max_tokens: Maximum tokens to generate
-            
-        Returns:
-            Tuple of (complete_response, activated_skill_name, ics_content_bytes)
-        """
-        response = ""
-        activated_skill = None
-        ics_content_bytes = None
-        
-        for chunk, skill, ics_bytes in self.chat_stream(user_query, temperature, max_tokens):
-            response += chunk
-            if skill and not activated_skill:
-                activated_skill = skill
-            if ics_bytes:
-                ics_content_bytes = ics_bytes
-        
-        return response, activated_skill, ics_content_bytes
+            # Mark as completed
+            step_info['status'] = 'completed'
+            yield f"\n\n---\n\n**ℹ️ Execution Info:** Used tool `{exec_info['tool_used']}` with parameters: {exec_info.get('parameters', {})}", step_info, None
 
 
-class GradioAgentUI:
-    """Gradio UI wrapper for Agent Skills Chatbot"""
+class GradioUI:
+    """Gradio UI for Agent Skills Chatbot"""
     
-    def __init__(self, orchestrator: AgentSkillsOrchestrator):
-        self.orchestrator = orchestrator
-        self.chat_history = []
+    def __init__(self, chatbot: AgentSkillsChatbot):
+        self.chatbot = chatbot
     
-    def save_ics_file(self, ics_content: str, summary: str = "event") -> str:
-        """
-        Save ICS content to a temporary file
-        
-        Args:
-            ics_content: The ICS file content (string)
-            summary: Event summary for filename
-            
-        Returns:
-            Path to the temporary file
-        """
+    def save_ics_file(self, ics_content: bytes, summary: str = "event") -> str:
+        """Save ICS content to a temporary file"""
         # Clean summary for filename
-        event_name_safe = "".join(c for c in summary if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
-        if not event_name_safe:
-            event_name_safe = "event"
+        safe_name = "".join(c for c in summary if c.isalnum() or c in (' ', '-', '_')).strip()[:50]
+        safe_name = safe_name or "event"
         
-        filename = f"event_{event_name_safe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ics"
+        filename = f"event_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ics"
         
-        # Create temp file in binary mode (matching calendar_gradio_app_with_skill.py)
-        temp_file = tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.ics', prefix='')
-        temp_file.write(ics_content.encode('utf-8'))
+        # Create temp file
+        temp_file = tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.ics')
+        temp_file.write(ics_content)
         temp_file.close()
         
         return temp_file.name
@@ -455,15 +529,9 @@ class GradioAgentUI:
         temperature: float
     ):
         """
-        Process user message and stream response
+        Process user message and stream response with 5-step progress
         
-        Args:
-            user_message: User's input message
-            history: Chat history (list of [user_msg, bot_msg] tuples)
-            temperature: LLM temperature
-            
-        Yields:
-            Tuple of (history, file_path, ics_preview)
+        Now displays each step of the Agent Skills process as it executes
         """
         if not user_message or not user_message.strip():
             yield history, None, ""
@@ -473,24 +541,23 @@ class GradioAgentUI:
         history = history or []
         history.append([user_message, ""])
         
-        # Stream response
-        activated_skill = None
+        # Stream response with step-by-step progress
         response = ""
         ics_content_bytes = None
+        activated_skill = None
         
-        for chunk, skill, ics_bytes in self.orchestrator.chat_stream(
+        for chunk, step_info, ics_bytes in self.chatbot.chat_stream(
             user_message, 
             temperature=temperature
         ):
             response += chunk
-            if skill and not activated_skill:
-                activated_skill = skill
-                # Prepend skill activation notice
-                skill_notice = f"🎯 **Using Skill:** `{activated_skill}`\n\n---\n\n"
-                response = skill_notice + response
-                history[-1][1] = response
-            else:
-                history[-1][1] = response
+            
+            # Track which skill was activated
+            if step_info and 'skill_name' in step_info and not activated_skill:
+                activated_skill = step_info['skill_name']
+            
+            # Update chat with current response
+            history[-1][1] = response
             
             # Store ICS content if returned
             if ics_bytes:
@@ -498,8 +565,8 @@ class GradioAgentUI:
             
             yield history, None, ""
         
-        # After streaming completes, check if we have ICS content from calendar skill
-        if activated_skill == "calendar-assistant" and ics_content_bytes:
+        # If we have ICS content, save it
+        if ics_content_bytes:
             # Decode ICS content for preview
             ics_preview = ics_content_bytes.decode('utf-8')
             
@@ -508,13 +575,13 @@ class GradioAgentUI:
             summary = summary_match.group(1) if summary_match else "event"
             
             # Save to temp file
-            file_path = self.save_ics_file(ics_preview, summary)
+            file_path = self.save_ics_file(ics_content_bytes, summary)
             
             # Return with file and preview
             yield history, file_path, ics_preview
             return
         
-        # Final yield for non-calendar responses
+        # Final yield
         yield history, None, ""
     
     def clear_history(self):
@@ -522,26 +589,37 @@ class GradioAgentUI:
         return []
     
     def build_interface(self) -> gr.Blocks:
-        """Build and return Gradio interface"""
+        """Build Gradio interface"""
         
-        with gr.Blocks(
-            title="Agent Skills Chatbot"
-        ) as interface:
+        with gr.Blocks(title="Agent Skills Chatbot - Enhanced") as interface:
             
             gr.Markdown(
                 """
-                # 🤖 Agent Skills Chatbot Demo
+                # 🤖 Agent Skills Chatbot - 5-Step Process Visualization
                 
-                This chatbot demonstrates **agentic tool usage** with skill discovery and execution.
+                Powered by **skill_loader.py** - Following [Agent Skills Integration Guide](https://agentskills.io/integrate-skills#overview)
                 
-                ## Available Skills:
+                ## 🔄 The 5-Step Process:
+                
+                1. **Discover** - Scan directories for skills (at startup)
+                2. **Load Metadata** - Parse skill names & descriptions (at startup)
+                3. **Match** - Analyze query and select relevant skill
+                4. **Activate** - Load full skill instructions and tools
+                5. **Execute** - Run skill scripts and access resources
+                
+                *Watch the steps execute in real-time below!*
+                
+                ---
+                
+                ## 🎯 Available Skills:
                 """
             )
             
-            # Display available skills
+            # Display discovered skills
             skills_info = ""
-            for skill_name, skill_data in self.orchestrator.skills.items():
-                skills_info += f"- **{skill_name}**: {skill_data['description']}\n"
+            for skill in self.chatbot.skills:
+                skills_info += f"- **{skill.name}** ({skill.skill_type})\n"
+                skills_info += f"  - {skill.description}\n"
             
             gr.Markdown(skills_info)
             
@@ -549,24 +627,28 @@ class GradioAgentUI:
                 """
                 ---
                 
-                ### How it works:
-                1. Ask a question about **idea generation** or **calendar booking**
-                2. The agent will automatically detect and activate the relevant skill
-                3. The skill's instructions are loaded and used to respond accurately
-                4. Responses are streamed in real-time powered by NVIDIA's Nemotron model
-                5. For calendar events: **Download the .ics file** and import to your calendar app!
+                ### ✨ What You'll See:
+                
+                Each query triggers the **5-step Agent Skills process** visualized in real-time:
+                
+                - ✅ **Steps 1-2** are completed at startup (skills discovered and loaded)
+                - ⏳ **Step 3** analyzes your query to find the best matching skill
+                - ⏳ **Step 4** activates the chosen skill and loads its full capabilities
+                - ⏳ **Step 5** executes the skill's tools and generates your result
+                
+                **Try it!** Ask a question and watch the process unfold step-by-step.
                 
                 ---
                 """
             )
             
-            # Chat interface with right sidebar
+            # Chat interface
             with gr.Row():
                 with gr.Column(scale=3):
                     chatbot = gr.Chatbot(
                         label="Chat",
                         height=500,
-                        show_label=True,                        
+                        show_label=True,
                     )
                     
                     with gr.Row():
@@ -579,8 +661,8 @@ class GradioAgentUI:
                         submit_btn = gr.Button("Send", variant="primary", scale=1)
                 
                 with gr.Column(scale=1):
-                    # Calendar file download section
-                    gr.Markdown("### 📅 Calendar Event File")
+                    # Calendar file download
+                    gr.Markdown("### 📅 Calendar Event")
                     ics_download = gr.File(
                         label="📥 Download .ics File",
                         visible=True,
@@ -588,40 +670,40 @@ class GradioAgentUI:
                     )
                     gr.Markdown("""
                     **How to use:**
-                    1. Download the .ics file above (when available)
-                    2. Double-click to open in your calendar app
-                    3. Or import manually in your calendar settings
+                    1. Download the .ics file
+                    2. Double-click to open
+                    3. Import to your calendar
                     """)
                     
-                    # Examples moved here
+                    # Examples
                     gr.Examples(
                         examples=[
                             "Schedule a team meeting tomorrow at 2pm for 2 hours",
-                            "Create a calendar event for my dentist appointment next Monday at 10am",
-                            "Book a lunch meeting on Friday at noon with the marketing team",
-                            "Generate 3 innovative ideas for sustainable urban living",
-                            "I need ideas for a mobile app that helps people learn languages",
-                            "Brainstorm concepts for AI-powered productivity tools"
+                            "Create a dentist appointment next Monday at 10am",
+                            "Book lunch Friday at noon with marketing team",
+                            "Generate 3 ideas for sustainable urban living",
+                            "I need ideas for a language learning mobile app",
+                            "Brainstorm AI-powered productivity tools"
                         ],
                         inputs=user_input,
                         label="💡 Try these examples"
                     )
             
-            # Advanced Settings and Clear button
-            with gr.Accordion("⚙️ Advanced Settings", open=False):
+            # Settings
+            with gr.Accordion("⚙️ Settings", open=False):
                 temperature = gr.Slider(
                     minimum=0.0,
                     maximum=1.0,
                     value=0.7,
                     step=0.1,
                     label="Temperature (creativity)",
-                    info="Higher = more creative, Lower = more focused"
+                    info="Higher = more creative"
                 )
             
             with gr.Row():
                 clear_btn = gr.Button("🗑️ Clear Chat")
             
-            # Hidden textbox for ICS preview (no longer displayed but needed for output)
+            # Hidden preview textbox
             ics_preview = gr.Textbox(visible=False)
             
             # Event handlers
@@ -652,16 +734,27 @@ class GradioAgentUI:
                 """
                 ---
                 
-                ### Technical Details:
-                - **Framework**: Following [Agent Skills API Specification](https://github.com/agentskills/agentskills)
-                - **LLM**: NVIDIA Llama 3.1 Nemotron Nano 8B via NVIDIA API Catalog
-                - **Skills**: Discovered dynamically from SKILL.md files
-                - **Prompt Integration**: Strictly following Agent Skills prompt integration guidelines
+                ### 🔧 Technical Details:
+                
+                **Architecture**: Implements the [Agent Skills Specification](https://agentskills.io/integrate-skills#overview)
+                
+                - **5-Step Process**: Discover → Load → Match → Activate → Execute
+                - **Skill Loader**: `skill_loader.py` with `@skill_tool` auto-discovery
+                - **LLM**: NVIDIA Llama 3.1 Nemotron Nano 8B
+                - **Skills Format**: `config.yaml` + `SKILL.md` + `scripts/` + `references/` + `assets/`
+                - **Tool Integration**: LangChain StructuredTool compatible
                 
                 ---
                 
-                💡 **Tip**: The agent automatically detects when to use skills based on your query keywords.
-                Watch for the "Using Skill" indicator in responses!
+                💡 **Features**:
+                - ✅ **Step-by-step visualization** of skill execution process
+                - ✅ **Auto skill discovery** from directory structure
+                - ✅ **Tool auto-discovery** with `@skill_tool` decorator
+                - ✅ **Access control aware** via config.yaml
+                - ✅ **Resource access** (read_reference, read_asset)
+                - ✅ **Streaming responses** with real-time progress
+                
+                📚 **Reference**: [agentskills.io/integrate-skills](https://agentskills.io/integrate-skills#overview)
                 """
             )
         
@@ -671,7 +764,7 @@ class GradioAgentUI:
 def main():
     """Main entry point"""
     print("\n" + "="*80)
-    print("Agent Skills Chatbot - Gradio Demo")
+    print("Agent Skills Chatbot - Enhanced with SkillLoader")
     print("="*80 + "\n")
     
     # Check for API key
@@ -688,39 +781,41 @@ def main():
     # Get project directory
     project_dir = Path(__file__).parent
     
-    # Define skill directories to scan
-    skill_directories = [
-        str(project_dir / "calendar_assistant_skill"),
-        str(project_dir / "nvidia_ideagen_skill")
-    ]
-    
-    print("🔍 Scanning for skills in:")
-    for d in skill_directories:
-        print(f"   - {d}")
+    print(f"📂 Project directory: {project_dir}")
     
     try:
-        # Initialize orchestrator
-        orchestrator = AgentSkillsOrchestrator(
-            skills_directories=skill_directories,
+        # Initialize chatbot with SkillLoader
+        chatbot = AgentSkillsChatbot(
+            skills_base_path=str(project_dir),
             api_key=api_key
         )
         
-        # Display discovered skills
+        # Display discovered skills summary
         print("\n📋 Skills Summary:")
-        for skill_name, skill_data in orchestrator.skills.items():
-            print(f"\n  🎯 {skill_name}")
-            print(f"     Version: {skill_data.get('version', 'unknown')}")
-            print(f"     Description: {skill_data['description'][:100]}...")
+        for skill in chatbot.skills:
+            print(f"\n  🎯 {skill.name}")
+            print(f"     Type: {skill.skill_type}")
+            print(f"     Version: {skill.skill_md_metadata.get('version', 'unknown')}")
+            print(f"     Description: {skill.description[:100]}...")
+        
+        # Discover tools for each skill
+        print("\n🔧 Discovered Tools:")
+        for skill in chatbot.skills:
+            tools = chatbot.skill_loader.discover_tools(skill.name)
+            if tools:
+                print(f"\n  📦 {skill.name}: {len(tools)} tool(s)")
+                for tool in tools[:3]:  # Show first 3
+                    print(f"     - {tool._tool_name}")
         
         print("\n" + "="*80)
         print("✅ Initialization complete! Launching Gradio interface...")
         print("="*80 + "\n")
         
         # Build and launch UI
-        ui = GradioAgentUI(orchestrator)
+        ui = GradioUI(chatbot)
         interface = ui.build_interface()
         
-        # Launch with public link option
+        # Launch
         interface.launch(
             server_name="0.0.0.0",
             server_port=7860,
@@ -736,4 +831,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

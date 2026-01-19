@@ -1,588 +1,736 @@
 #!/usr/bin/env python3
 """
-Test script to verify Calendar Assistant Agent Skill via CLI Orchestration
-Discovers SKILL.md and executes skill through CLI invocation
-Based on: https://github.com/SpillwaveSolutions/using-claude-code-cli-agent-skill
+Comprehensive Test Suite for ExpAgentSkill with AI Planner / NAT Integration
+Tests skill_loader.py, @skill_tool decorator, and both calendar and ideagen skills
 """
 
 import os
 import sys
 import json
-import subprocess
-import time
-import re
 from pathlib import Path
 from datetime import datetime, timedelta
-from enum import Enum
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List
+import traceback
 
-# YAML parser for SKILL.md frontmatter
-try:
-    import yaml
-except ImportError:
-    print("⚠️  PyYAML not found, installing...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "pyyaml"], check=True)
-    import yaml
+# Color codes for terminal output
+class Colors:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
 
+def print_section(title: str):
+    """Print a formatted section header"""
+    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BOLD}{Colors.BLUE}{title.center(80)}{Colors.RESET}")
+    print(f"{Colors.BOLD}{Colors.BLUE}{'='*80}{Colors.RESET}\n")
 
-class InvocationStatus(str, Enum):
-    """Status of a CLI invocation."""
-    SUCCESS = "success"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
+def print_test(test_name: str):
+    """Print a test header"""
+    print(f"\n{Colors.BOLD}TEST: {test_name}{Colors.RESET}")
+    print("-" * 80)
 
+def print_success(message: str):
+    """Print success message"""
+    print(f"{Colors.GREEN}✅ {message}{Colors.RESET}")
 
-@dataclass
-class CLIInvocationResult:
-    """Result of a CLI tool invocation."""
-    status: InvocationStatus
-    tool: str
-    output: str
-    parsed_json: dict[str, Any] | None = None
-    duration_ms: int = 0
-    returncode: int = 0
-    error: str | None = None
-    command: list[str] = field(default_factory=list)
+def print_error(message: str):
+    """Print error message"""
+    print(f"{Colors.RED}❌ {message}{Colors.RESET}")
 
+def print_warning(message: str):
+    """Print warning message"""
+    print(f"{Colors.YELLOW}⚠️  {message}{Colors.RESET}")
 
-class SkillCLIOrchestrator:
-    """Orchestrator for discovering and invoking Agent Skills via CLI."""
+def print_info(message: str):
+    """Print info message"""
+    print(f"   {message}")
 
-    def __init__(self, project_dir: Path | None = None, default_timeout: int = 60):
-        self.project_dir = project_dir or Path.cwd()
-        self.default_timeout = default_timeout
-
-    def discover_skill(self, skill_dir: Path) -> dict[str, Any] | None:
-        """Discover and parse SKILL.md metadata from a skill directory."""
-        skill_md_path = skill_dir / "SKILL.md"
+class TestResults:
+    """Track test results"""
+    def __init__(self):
+        self.tests: List[tuple[str, bool, str]] = []
+    
+    def add(self, name: str, passed: bool, details: str = ""):
+        self.tests.append((name, passed, details))
+    
+    def summary(self):
+        """Print test summary"""
+        print_section("TEST SUMMARY")
         
-        if not skill_md_path.exists():
-            return None
+        passed = sum(1 for _, p, _ in self.tests if p)
+        failed = len(self.tests) - passed
         
-        with open(skill_md_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Extract YAML frontmatter
-        frontmatter_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-        if not frontmatter_match:
-            return None
-        
-        try:
-            metadata = yaml.safe_load(frontmatter_match.group(1))
-            metadata['skill_path'] = str(skill_dir.absolute())
-            metadata['skill_md_path'] = str(skill_md_path.absolute())
-            
-            # Determine entry point
-            if 'runtime' in metadata and metadata['runtime'].get('type') == 'python':
-                scripts_dir = skill_dir / 'scripts'
-                if scripts_dir.exists():
-                    # Find main script
-                    for script in scripts_dir.glob('*.py'):
-                        if script.name != '__init__.py':
-                            metadata['entry_point'] = str(script.absolute())
-                            break
-            
-            return metadata
-        except yaml.YAMLError as e:
-            print(f"❌ Error parsing SKILL.md YAML: {e}")
-            return None
-
-    def invoke_skill_script(
-        self,
-        script_path: str | Path,
-        method: str,
-        args: dict[str, Any],
-        timeout: int | None = None,
-    ) -> CLIInvocationResult:
-        """Invoke a skill script method via subprocess."""
-        timeout = timeout or self.default_timeout
-        start_time = time.time()
-        
-        # Build command to execute the skill
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--method", method,
-            "--args", json.dumps(args)
-        ]
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=Path(script_path).parent,
-            )
-            
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            if result.returncode == 0:
-                return CLIInvocationResult(
-                    status=InvocationStatus.SUCCESS,
-                    tool="python",
-                    output=result.stdout,
-                    parsed_json=self._extract_json_from_output(result.stdout),
-                    duration_ms=duration_ms,
-                    returncode=result.returncode,
-                    command=cmd,
-                )
+        for name, passed, details in self.tests:
+            if passed:
+                print_success(f"{name}")
             else:
-                return CLIInvocationResult(
-                    status=InvocationStatus.FAILED,
-                    tool="python",
-                    output=result.stdout,
-                    error=result.stderr,
-                    duration_ms=duration_ms,
-                    returncode=result.returncode,
-                    command=cmd,
-                )
+                print_error(f"{name}")
+            if details:
+                print_info(details)
         
-        except subprocess.TimeoutExpired:
-            return CLIInvocationResult(
-                status=InvocationStatus.TIMEOUT,
-                tool="python",
-                output="",
-                error=f"Timeout after {timeout}s",
-                duration_ms=int((time.time() - start_time) * 1000),
-                returncode=-1,
-                command=cmd,
-            )
+        print(f"\n{Colors.BOLD}Total: {len(self.tests)} tests{Colors.RESET}")
+        print(f"{Colors.GREEN}Passed: {passed}{Colors.RESET}")
+        print(f"{Colors.RED}Failed: {failed}{Colors.RESET}")
+        
+        if failed == 0:
+            print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 ALL TESTS PASSED!{Colors.RESET}")
+            return 0
+        else:
+            print(f"\n{Colors.RED}{Colors.BOLD}❌ {failed} TEST(S) FAILED{Colors.RESET}")
+            return 1
 
-    def _extract_json_from_output(self, output: str) -> dict[str, Any] | None:
-        """Extract JSON from CLI output."""
-        if not output:
-            return None
-        
-        try:
-            return json.loads(output)
-        except json.JSONDecodeError:
-            pass
-        
-        # Try to find JSON in code blocks
-        pattern = r"```(?:json)?\s*\n([\s\S]*?)\n```"
-        for match in re.findall(pattern, output):
-            try:
-                return json.loads(match.strip())
-            except json.JSONDecodeError:
-                continue
-        
-        return None
 
-def test_skill_discovery(orchestrator: SkillCLIOrchestrator):
-    """Test skill discovery from SKILL.md"""
-    print("\n" + "="*60)
-    print("TEST 1: Skill Discovery (SKILL.md)")
-    print("="*60)
+def test_skill_loader_import():
+    """Test 1: Import SkillLoader"""
+    print_test("Import SkillLoader Module")
     
-    skill_dir = Path(__file__).parent / 'calendar_assistant_skill'
-    print(f"🔍 Searching for skills in: {skill_dir}")
-    
-    metadata = orchestrator.discover_skill(skill_dir)
-    
-    if not metadata:
-        print("❌ Failed to discover skill")
-        return None
-    
-    print(f"✅ Discovered skill: {metadata['name']}")
-    print(f"✅ Version: {metadata['version']}")
-    print(f"✅ Description: {metadata['description']}")
-    print(f"✅ Runtime: {metadata['runtime']['type']} {metadata['runtime']['version']}")
-    print(f"✅ Entry Point: {metadata.get('entry_point', 'N/A')}")
-    print(f"✅ Dependencies: {len(metadata.get('dependencies', []))} packages")
-    
-    return metadata
-
-def test_direct_script_execution(metadata: dict[str, Any]):
-    """Test direct script execution via CLI"""
-    print("\n" + "="*60)
-    print("TEST 2: Direct Script Execution via CLI")
-    print("="*60)
-    
-    entry_point = metadata.get('entry_point')
-    if not entry_point:
-        print("❌ No entry point found in metadata")
-        return False
-    
-    print(f"📍 Entry Point: {entry_point}")
-    
-    # Test if script exists and is executable
-    if not Path(entry_point).exists():
-        print(f"❌ Entry point does not exist: {entry_point}")
-        return False
-    
-    # Execute script with --help to verify it's runnable
     try:
-        result = subprocess.run(
-            [sys.executable, entry_point, "--help"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+        from skill_loader import (
+            SkillLoader, SkillMetadata, skill_tool,
+            load_skills, discover_and_list_skills
         )
-        
-        if "calendar" in result.stdout.lower() or result.returncode == 0:
-            print("✅ Script is executable")
-            return True
-        else:
-            print("⚠️  Script executed but may not support CLI mode")
-            print(f"   Output: {result.stdout[:200]}")
-            return True  # Still count as success if it runs
-            
-    except Exception as e:
-        print(f"❌ Failed to execute script: {e}")
-        return False
-
-def test_skill_via_python_import(metadata: dict[str, Any], skill_name: str = "calendar"):
-    """Test skill functionality via Python import"""
-    print("\n" + "="*60)
-    print(f"TEST 3: Skill Execution via Python Import ({skill_name})")
-    print("="*60)
-    
-    entry_point = metadata.get('entry_point')
-    if not entry_point:
-        print("❌ No entry point found")
-        return False
-    
-    # Add skill to path
-    skill_scripts_dir = Path(entry_point).parent
-    sys.path.insert(0, str(skill_scripts_dir))
-    
-    try:
-        if skill_name == "calendar":
-            from calendar_skill import CalendarAssistantSkill
-            print("✅ Successfully imported CalendarAssistantSkill")
-            
-            # Initialize skill
-            api_key = os.environ.get('NVIDIA_API_KEY')
-            skill = CalendarAssistantSkill(api_key=api_key, default_timezone='UTC')
-            
-            info = skill.get_skill_info()
-            print(f"✅ Skill initialized: {info['name']} v{info['version']}")
-            print(f"✅ Status: {info['status']}")
-            print(f"✅ Capabilities: {len(info['capabilities'])} available")
-            
-            # Test event creation
-            from datetime import datetime, timedelta
-            import zoneinfo
-            start_time = datetime.now(zoneinfo.ZoneInfo("UTC")) + timedelta(days=1, hours=14)
-            
-            ics_content = skill.create_calendar_event(
-                summary="CLI Test Meeting",
-                start_datetime=start_time,
-                duration_hours=1.0,
-                description="Created via CLI orchestration test",
-                location="Test Room"
-            )
-            
-            print(f"✅ Created ICS event: {len(ics_content)} bytes")
-            
-            # Save test file
-            with open("test_cli_event.ics", "wb") as f:
-                f.write(ics_content)
-            print("✅ Event saved to: test_cli_event.ics")
-            
-            return skill
-            
-        elif skill_name == "ideagen":
-            from ideagen_skill import NvidiaIdeaGenSkill
-            print("✅ Successfully imported NvidiaIdeaGenSkill")
-            
-            # Initialize skill
-            api_key = os.environ.get('NVIDIA_API_KEY')
-            if not api_key:
-                print("⚠️  NVIDIA_API_KEY not set, skipping ideagen test")
-                return None
-            
-            skill = NvidiaIdeaGenSkill(api_key=api_key)
-            
-            info = skill.get_skill_info()
-            print(f"✅ Skill initialized: {info['name']} v{info['version']}")
-            print(f"✅ Status: {info['status']}")
-            print(f"✅ Capabilities: {len(info['capabilities'])} available")
-            print(f"✅ Model: {info['model']}")
-            
-            # Test idea generation
-            print("\n🧪 Testing idea generation...")
-            print("Topic: CLI-based productivity tools")
-            print("Number of ideas: 2")
-            print("\n" + "-"*60)
-            
-            ideas_text = ""
-            for chunk in skill.generate_ideas_stream(
-                topic="CLI-based productivity tools",
-                num_ideas=2,
-                creativity=0.7
-            ):
-                print(chunk, end="", flush=True)
-                ideas_text += chunk
-            
-            print("\n" + "-"*60)
-            
-            # Save test ideas
-            filepath = skill.save_ideas("CLI-based productivity tools", ideas_text)
-            print(f"\n✅ Ideas saved to: {filepath}")
-            
-            return skill
-        
-        else:
-            print(f"❌ Unknown skill name: {skill_name}")
-            return False
-        
+        print_success("Successfully imported SkillLoader and related classes")
+        print_info(f"SkillLoader: {SkillLoader}")
+        print_info(f"SkillMetadata: {SkillMetadata}")
+        print_info(f"@skill_tool decorator: {skill_tool}")
+        return True, None
     except ImportError as e:
-        print(f"❌ Import failed: {e}")
-        return False
-    except Exception as e:
-        print(f"❌ Execution failed: {e}")
-        import traceback
+        print_error(f"Failed to import SkillLoader: {e}")
         traceback.print_exc()
-        return False
+        return False, str(e)
 
-def test_skill_with_claude_cli(metadata: dict[str, Any], orchestrator: SkillCLIOrchestrator):
-    """Test skill invocation via Claude CLI (if available)"""
-    print("\n" + "="*60)
-    print("TEST 4: Claude CLI Integration (Optional)")
-    print("="*60)
+
+def test_skill_discovery():
+    """Test 2: Skill Discovery"""
+    print_test("Discover Skills from Directory")
     
-    # Check if claude CLI is available
     try:
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        from skill_loader import SkillLoader
         
-        if result.returncode == 0:
-            print("✅ Claude CLI is available")
-            print(f"   Version: {result.stdout.strip()}")
+        # Initialize loader
+        base_path = Path(__file__).parent
+        loader = SkillLoader(base_path)
+        
+        print_info(f"Skills base path: {base_path}")
+        
+        # Discover skills
+        skills = loader.list_skills()
+        
+        if not skills:
+            print_error("No skills discovered")
+            return False, "No skills found"
+        
+        print_success(f"Discovered {len(skills)} skill(s):")
+        for skill in skills:
+            print_info(f"  📦 {skill.name}")
+            print_info(f"     Type: {skill.skill_type}")
+            print_info(f"     Description: {skill.description[:80]}...")
+            print_info(f"     Path: {skill.skill_path}")
+        
+        return True, f"Found {len(skills)} skills"
+    
+    except Exception as e:
+        print_error(f"Skill discovery failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_skill_metadata():
+    """Test 3: Skill Metadata Loading"""
+    print_test("Load and Parse Skill Metadata")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        loader = SkillLoader(Path(__file__).parent)
+        skills = loader.list_skills()
+        
+        if not skills:
+            print_error("No skills available for metadata test")
+            return False, "No skills"
+        
+        skill = skills[0]
+        print_success(f"Testing metadata for: {skill.name}")
+        
+        # Check config.yaml
+        if skill.config:
+            print_success("config.yaml loaded successfully")
+            print_info(f"  Name: {skill.config.get('name', 'N/A')}")
+            print_info(f"  Version: {skill.config.get('version', 'N/A')}")
+            print_info(f"  Skill Type: {skill.skill_type}")
+            print_info(f"  Runtime: {skill.config.get('runtime', {}).get('type', 'N/A')}")
+        else:
+            print_warning("No config.yaml found")
+        
+        # Check SKILL.md frontmatter
+        if skill.skill_md_metadata:
+            print_success("SKILL.md frontmatter parsed successfully")
+            print_info(f"  Keys: {list(skill.skill_md_metadata.keys())}")
+        else:
+            print_warning("No SKILL.md frontmatter")
+        
+        # Check description
+        if skill.description:
+            print_success(f"Description available ({len(skill.description)} chars)")
+        else:
+            print_warning("No description")
+        
+        return True, None
+    
+    except Exception as e:
+        print_error(f"Metadata test failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_tool_discovery():
+    """Test 4: Tool Auto-Discovery"""
+    print_test("Auto-Discover @skill_tool Decorated Functions")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        loader = SkillLoader(Path(__file__).parent)
+        
+        # Test calendar skill
+        print_info("Testing calendar-assistant skill...")
+        cal_tools = loader.discover_tools("calendar-assistant")
+        
+        if cal_tools:
+            print_success(f"Discovered {len(cal_tools)} tools from calendar-assistant:")
+            for tool in cal_tools:
+                print_info(f"  🔧 {tool._tool_name}")
+                print_info(f"     Description: {tool._tool_description[:60]}...")
+        else:
+            print_warning("No tools discovered from calendar-assistant")
+        
+        # Test ideagen skill
+        print_info("\nTesting nvidia-ideagen skill...")
+        idea_tools = loader.discover_tools("nvidia-ideagen")
+        
+        if idea_tools:
+            print_success(f"Discovered {len(idea_tools)} tools from nvidia-ideagen:")
+            for tool in idea_tools:
+                print_info(f"  🔧 {tool._tool_name}")
+                print_info(f"     Description: {tool._tool_description[:60]}...")
+        else:
+            print_warning("No tools discovered from nvidia-ideagen")
+        
+        total_tools = len(cal_tools) + len(idea_tools)
+        if total_tools == 0:
+            print_error("No tools discovered from any skill")
+            return False, "No tools found"
+        
+        return True, f"Found {total_tools} tools total"
+    
+    except Exception as e:
+        print_error(f"Tool discovery failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_langchain_tool_creation():
+    """Test 5: LangChain StructuredTool Creation"""
+    print_test("Create LangChain StructuredTools")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        # Check if LangChain is available
+        try:
+            from langchain.tools import StructuredTool
+            langchain_available = True
+        except ImportError:
+            print_warning("LangChain not installed - skipping this test")
+            return True, "Skipped (LangChain not available)"
+        
+        loader = SkillLoader(Path(__file__).parent)
+        
+        # Test calendar skill
+        print_info("Creating LangChain tools for calendar-assistant...")
+        try:
+            cal_langchain_tools = loader.create_langchain_tools("calendar-assistant")
             
-            # Test skill invocation via Claude CLI
-            skill_dir = Path(metadata['skill_path'])
-            prompt = f"Use the calendar skill to create a meeting for tomorrow at 3pm"
+            print_success(f"Created {len(cal_langchain_tools)} LangChain StructuredTools:")
+            for tool in cal_langchain_tools:
+                print_info(f"  🔧 {tool.name}")
+                print_info(f"     Args schema: {tool.args_schema.__name__ if tool.args_schema else 'None'}")
+        except Exception as e:
+            print_error(f"Failed to create calendar tools: {e}")
+            return False, str(e)
+        
+        # Test ideagen skill
+        print_info("\nCreating LangChain tools for nvidia-ideagen...")
+        try:
+            idea_langchain_tools = loader.create_langchain_tools("nvidia-ideagen")
             
-            print(f"\n🔧 Testing skill invocation with prompt:")
-            print(f"   '{prompt}'")
+            print_success(f"Created {len(idea_langchain_tools)} LangChain StructuredTools:")
+            for tool in idea_langchain_tools:
+                print_info(f"  🔧 {tool.name}")
+                print_info(f"     Args schema: {tool.args_schema.__name__ if tool.args_schema else 'None'}")
+        except Exception as e:
+            print_error(f"Failed to create ideagen tools: {e}")
+            return False, str(e)
+        
+        total = len(cal_langchain_tools) + len(idea_langchain_tools)
+        return True, f"Created {total} LangChain tools"
+    
+    except Exception as e:
+        print_error(f"LangChain tool creation failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_access_control():
+    """Test 6: Access Control"""
+    print_test("Test Access Control via config.yaml")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        loader = SkillLoader(Path(__file__).parent)
+        skills = loader.list_skills()
+        
+        print_info("Testing access control for discovered skills...")
+        
+        for skill in skills:
+            print_info(f"\nSkill: {skill.name}")
+            print_info(f"  User groups: {skill.user_groups if skill.user_groups else 'None (unrestricted)'}")
+            print_info(f"  Admin groups: {skill.admin_groups if skill.admin_groups else 'None'}")
             
-            cmd = [
-                "claude",
-                "--add-dir", str(skill_dir),
-                "-p", prompt
+            # Test with different user groups
+            test_groups = [
+                ([], "No groups"),
+                (["engineering-team"], "Engineering team"),
+                (["data-science-team"], "Data science team"),
+                (["ai-planner-admins"], "Admins"),
             ]
             
-            print(f"\n💻 Command: {' '.join(cmd)}")
-            print("⚠️  Note: This requires Claude CLI to be configured with API key")
-            
-            return True
-        else:
-            print("⚠️  Claude CLI not available")
-            return None
-            
-    except FileNotFoundError:
-        print("⚠️  Claude CLI not installed")
-        print("   Install from: https://github.com/anthropics/claude-cli")
-        return None
+            for groups, label in test_groups:
+                has_access = skill.check_access(groups)
+                status = "✓ Access granted" if has_access else "✗ Access denied"
+                print_info(f"    {label}: {status}")
+        
+        print_success("Access control test completed")
+        return True, None
+    
     except Exception as e:
-        print(f"⚠️  Error checking Claude CLI: {e}")
-        return None
+        print_error(f"Access control test failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
 
-def test_agent_skills_compliance(metadata: dict[str, Any], skill_name: str = "calendar"):
-    """Verify Agent Skills API compliance"""
-    print("\n" + "="*60)
-    print(f"TEST 5: Agent Skills API Compliance ({skill_name})")
-    print("="*60)
-    
-    skill_dir = Path(metadata['skill_path'])
-    
-    # Define required files based on skill type
-    if skill_name == "calendar":
-        required_files = {
-            'SKILL.md': 'Main skill specification with YAML frontmatter',
-            'scripts/calendar_skill.py': 'Main implementation',
-            'scripts/__init__.py': 'Python package marker'
-        }
-    elif skill_name == "ideagen":
-        required_files = {
-            'SKILL.md': 'Main skill specification with YAML frontmatter',
-            'scripts/ideagen_skill.py': 'Main implementation',
-            'scripts/__init__.py': 'Python package marker'
-        }
-    else:
-        required_files = {
-            'SKILL.md': 'Main skill specification with YAML frontmatter',
-            'scripts/__init__.py': 'Python package marker'
-        }
-    
-    recommended_files = {
-        'README.md': 'User-facing documentation',
-        'requirements.txt': 'Python dependencies',
-        'examples.md': 'Usage examples'
-    }
-    
-    all_required_present = True
-    
-    print("\n📋 Required Files:")
-    for file, description in required_files.items():
-        file_path = skill_dir / file
-        if file_path.exists():
-            size = file_path.stat().st_size
-            print(f"✅ {file}: {description} ({size} bytes)")
-        else:
-            print(f"❌ {file}: MISSING")
-            all_required_present = False
-    
-    print("\n📋 Recommended Files:")
-    for file, description in recommended_files.items():
-        file_path = skill_dir / file
-        if file_path.exists():
-            size = file_path.stat().st_size
-            print(f"✅ {file}: {description} ({size} bytes)")
-        else:
-            print(f"⚠️  {file}: Not found (recommended)")
-    
-    # Check metadata structure
-    print("\n📋 Metadata Validation:")
-    required_metadata = ['name', 'version', 'description', 'runtime']
-    for key in required_metadata:
-        if key in metadata:
-            print(f"✅ {key}: {metadata[key]}")
-        else:
-            print(f"❌ {key}: MISSING")
-            all_required_present = False
-    
-    if all_required_present:
-        print("\n✅ Skill is Agent Skills API compliant")
-    else:
-        print("\n❌ Skill has compliance issues")
-    
-    return all_required_present
 
-def test_all_skills(orchestrator: SkillCLIOrchestrator):
-    """Test all available skills"""
-    results = []
+def test_resource_tools():
+    """Test 7: Built-in Resource Tools"""
+    print_test("Test Built-in Resource Access Tools")
     
-    # Define skills to test
-    skills_to_test = [
-        {
-            'name': 'calendar',
-            'dir': Path(__file__).parent / 'calendar_assistant_skill',
-            'display_name': 'Calendar Assistant'
-        },
-        {
-            'name': 'ideagen',
-            'dir': Path(__file__).parent / 'nvidia_ideagen_skill',
-            'display_name': 'NVIDIA Idea Generation'
+    try:
+        from skill_loader import SkillLoader
+        
+        # Check if LangChain is available
+        try:
+            from langchain.tools import StructuredTool
+        except ImportError:
+            print_warning("LangChain not installed - skipping this test")
+            return True, "Skipped (LangChain not available)"
+        
+        loader = SkillLoader(Path(__file__).parent)
+        
+        # Get tools from calendar skill (which should have resource tools)
+        tools = loader.create_langchain_tools("calendar-assistant")
+        
+        # Find resource tools
+        resource_tool_names = ["read_reference", "read_asset", "list_resources"]
+        found_resource_tools = [t for t in tools if t.name in resource_tool_names]
+        
+        if found_resource_tools:
+            print_success(f"Found {len(found_resource_tools)} resource tools:")
+            for tool in found_resource_tools:
+                print_info(f"  🔧 {tool.name}: {tool.description}")
+            
+            # Test list_resources
+            list_tool = next((t for t in found_resource_tools if t.name == "list_resources"), None)
+            if list_tool:
+                print_info("\nTesting list_resources tool...")
+                result = list_tool.func()
+                print_info(f"  Result:\n{result}")
+                print_success("list_resources executed successfully")
+            
+            return True, f"Found {len(found_resource_tools)} resource tools"
+        else:
+            print_warning("No resource tools found (check enable_resource_tools in config.yaml)")
+            return True, "No resource tools (may be disabled)"
+    
+    except Exception as e:
+        print_error(f"Resource tools test failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_calendar_skill_execution():
+    """Test 8: Calendar Skill Execution"""
+    print_test("Execute Calendar Assistant Skill Tools")
+    
+    try:
+        # Import calendar skill tools directly
+        sys.path.insert(0, str(Path(__file__).parent))
+        from calendar_assistant_skill.scripts.calendar_skill import (
+            parse_calendar_event,
+            create_ics_file,
+            natural_language_to_calendar,
+            get_calendar_skill_info
+        )
+        
+        print_success("Successfully imported calendar skill tools")
+        
+        # Test 1: Get skill info
+        print_info("\n1. Testing get_calendar_skill_info...")
+        info = get_calendar_skill_info()
+        print_success(f"  Name: {info['name']}")
+        print_success(f"  Version: {info['version']}")
+        print_success(f"  Capabilities: {len(info['capabilities'])}")
+        print_success(f"  Status: {info['status']}")
+        
+        # Test 2: Create ICS file
+        print_info("\n2. Testing create_ics_file...")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        result = create_ics_file(
+            summary="Test Meeting",
+            start_date=tomorrow,
+            start_time="14:00",
+            duration_hours=1.0,
+            location="Test Room"
+        )
+        
+        if result.get("success"):
+            print_success(f"  Created ICS file: {result['file_path']}")
+            print_success(f"  Event: {result['event_summary']}")
+            print_success(f"  File size: {result['file_size']} bytes")
+            
+            # Clean up test file
+            try:
+                Path(result['file_path']).unlink()
+            except:
+                pass
+        else:
+            print_error(f"  Failed: {result.get('error', 'Unknown error')}")
+            return False, "ICS creation failed"
+        
+        # Test 3: Parse calendar event (requires API key)
+        api_key = os.environ.get('NVIDIA_API_KEY')
+        if api_key:
+            print_info("\n3. Testing parse_calendar_event...")
+            parsed = parse_calendar_event("Meeting tomorrow at 3pm for 2 hours")
+            
+            if "error" in parsed:
+                print_warning(f"  Parse failed (expected if API unavailable): {parsed['error']}")
+            else:
+                print_success(f"  Parsed successfully:")
+                print_info(f"    Summary: {parsed.get('summary', 'N/A')}")
+                print_info(f"    Date: {parsed.get('start_date', 'N/A')}")
+                print_info(f"    Time: {parsed.get('start_time', 'N/A')}")
+        else:
+            print_warning("  NVIDIA_API_KEY not set - skipping natural language parsing test")
+        
+        return True, "Calendar skill tools executed"
+    
+    except Exception as e:
+        print_error(f"Calendar skill execution failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_ideagen_skill_execution():
+    """Test 9: IdeaGen Skill Execution"""
+    print_test("Execute NVIDIA IdeaGen Skill Tools")
+    
+    try:
+        # Check for API key first
+        api_key = os.environ.get('NVIDIA_API_KEY')
+        if not api_key:
+            print_warning("NVIDIA_API_KEY not set - skipping IdeaGen skill tests")
+            print_info("Set NVIDIA_API_KEY to test idea generation functionality")
+            print_info("Get your key at: https://build.nvidia.com/")
+            return True, "Skipped (no API key)"
+        
+        # Import ideagen skill tools
+        sys.path.insert(0, str(Path(__file__).parent))
+        from nvidia_ideagen_skill.scripts.ideagen_skill import (
+            generate_ideas,
+            get_ideagen_skill_info,
+            save_generated_ideas,
+            list_saved_ideas
+        )
+        
+        print_success("Successfully imported ideagen skill tools")
+        
+        # Test 1: Get skill info
+        print_info("\n1. Testing get_ideagen_skill_info...")
+        info = get_ideagen_skill_info()
+        print_success(f"  Name: {info['name']}")
+        print_success(f"  Version: {info['version']}")
+        print_success(f"  Model: {info['model']}")
+        print_success(f"  Capabilities: {len(info['capabilities'])}")
+        print_success(f"  Status: {info['status']}")
+        
+        # Test 2: Generate ideas
+        print_info("\n2. Testing generate_ideas...")
+        print_info("  Generating 2 ideas about 'CLI testing tools'...")
+        
+        ideas = generate_ideas(
+            topic="CLI testing tools",
+            num_ideas=2,
+            creativity=0.7
+        )
+        
+        if ideas and not ideas.startswith("❌"):
+            print_success("  Ideas generated successfully!")
+            print_info(f"  Output length: {len(ideas)} characters")
+            
+            # Test 3: Save ideas
+            print_info("\n3. Testing save_generated_ideas...")
+            save_result = save_generated_ideas("CLI testing tools", ideas)
+            
+            if save_result.get("success"):
+                print_success(f"  Saved to: {save_result['file_path']}")
+                
+                # Clean up test file
+                try:
+                    Path(save_result['file_path']).unlink()
+                except:
+                    pass
+            else:
+                print_warning(f"  Save failed: {save_result.get('error', 'Unknown error')}")
+        else:
+            print_error(f"  Idea generation failed: {ideas}")
+            return False, "Idea generation failed"
+        
+        # Test 4: List saved ideas
+        print_info("\n4. Testing list_saved_ideas...")
+        list_result = list_saved_ideas()
+        if list_result.get("success"):
+            print_success(f"  Found {list_result['count']} saved idea file(s)")
+        
+        return True, "IdeaGen skill tools executed"
+    
+    except Exception as e:
+        print_error(f"IdeaGen skill execution failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_skills_xml_generation():
+    """Test 10: Skills XML Generation for LLM"""
+    print_test("Generate Skills XML for LLM Prompt Injection")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        loader = SkillLoader(Path(__file__).parent)
+        
+        # Generate XML
+        xml = loader.generate_skills_xml()
+        
+        print_success("Generated skills XML:")
+        print_info(xml)
+        
+        # Validate XML structure
+        if "<available_skills>" in xml and "</available_skills>" in xml:
+            print_success("XML structure valid")
+        else:
+            print_error("Invalid XML structure")
+            return False, "Invalid XML"
+        
+        # Check for skill elements
+        skill_count = xml.count("<skill>")
+        print_success(f"Contains {skill_count} skill(s)")
+        
+        return True, f"{skill_count} skills in XML"
+    
+    except Exception as e:
+        print_error(f"XML generation failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_pydantic_model_generation():
+    """Test 11: Pydantic Model Auto-Generation"""
+    print_test("Auto-Generate Pydantic Models from Type Hints")
+    
+    try:
+        from skill_loader import SkillLoader
+        
+        # Check if Pydantic is available
+        try:
+            from pydantic import BaseModel
+        except ImportError:
+            print_warning("Pydantic not installed - skipping this test")
+            return True, "Skipped (Pydantic not available)"
+        
+        loader = SkillLoader(Path(__file__).parent)
+        
+        # Discover tools
+        tools = loader.discover_tools("calendar-assistant")
+        
+        if not tools:
+            print_warning("No tools to test")
+            return True, "No tools discovered"
+        
+        print_info(f"Testing Pydantic model generation for {len(tools)} tools...")
+        
+        for tool in tools[:3]:  # Test first 3 tools
+            try:
+                # Create Pydantic model
+                model = loader._create_pydantic_model_from_function(tool)
+                print_success(f"  {tool._tool_name}: {model.__name__}")
+                
+                # Show fields
+                if hasattr(model, 'model_fields'):
+                    fields = list(model.model_fields.keys())
+                    print_info(f"    Fields: {', '.join(fields)}")
+            except Exception as e:
+                print_error(f"  {tool._tool_name}: Failed - {e}")
+        
+        return True, "Pydantic models generated"
+    
+    except Exception as e:
+        print_error(f"Pydantic model test failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
+
+
+def test_directory_structure():
+    """Test 12: Directory Structure Compliance"""
+    print_test("Verify OpenSkills Directory Structure")
+    
+    try:
+        base_path = Path(__file__).parent
+        
+        # Check calendar skill
+        print_info("Checking calendar_assistant_skill...")
+        cal_skill = base_path / "calendar_assistant_skill"
+        
+        required_files = {
+            "config.yaml": "Configuration file",
+            "SKILL.md": "Skill instructions",
+            "scripts/calendar_skill.py": "Implementation",
+            "scripts/__init__.py": "Package init"
         }
-    ]
-    
-    for skill_config in skills_to_test:
-        skill_name = skill_config['name']
-        skill_dir = skill_config['dir']
-        display_name = skill_config['display_name']
         
-        print("\n" + "="*80)
-        print(f"TESTING SKILL: {display_name}")
-        print("="*80)
+        recommended_dirs = {
+            "references": "Documentation directory",
+            "assets": "Resources directory"
+        }
         
-        # Test 1: Skill Discovery
-        try:
-            metadata = orchestrator.discover_skill(skill_dir)
-            if metadata:
-                print(f"✅ Discovered skill: {metadata['name']}")
-                print(f"✅ Version: {metadata['version']}")
-                print(f"✅ Description: {metadata['description']}")
-                results.append((f"{display_name} - Discovery", True))
+        all_present = True
+        for file, desc in required_files.items():
+            file_path = cal_skill / file
+            if file_path.exists():
+                print_success(f"  ✓ {file}: {desc}")
             else:
-                print(f"❌ Failed to discover {display_name} skill")
-                results.append((f"{display_name} - Discovery", False))
-                continue
-        except Exception as e:
-            print(f"❌ Discovery failed: {e}")
-            results.append((f"{display_name} - Discovery", False))
-            continue
+                print_error(f"  ✗ {file}: MISSING")
+                all_present = False
         
-        # Test 2: Direct Script Execution
-        try:
-            script_result = test_direct_script_execution(metadata)
-            results.append((f"{display_name} - Script Execution", script_result))
-        except Exception as e:
-            print(f"❌ Script execution test failed: {e}")
-            results.append((f"{display_name} - Script Execution", False))
-        
-        # Test 3: Skill Execution via Python Import
-        try:
-            skill = test_skill_via_python_import(metadata, skill_name)
-            if skill:
-                results.append((f"{display_name} - Python Import", True))
-            elif skill is None:
-                # None means skipped (e.g., missing API key)
-                results.append((f"{display_name} - Python Import", None))
+        for dir_name, desc in recommended_dirs.items():
+            dir_path = cal_skill / dir_name
+            if dir_path.exists() and dir_path.is_dir():
+                files = list(dir_path.iterdir())
+                print_success(f"  ✓ {dir_name}/: {desc} ({len(files)} files)")
             else:
-                results.append((f"{display_name} - Python Import", False))
-        except Exception as e:
-            print(f"❌ Python import test failed: {e}")
-            import traceback
-            traceback.print_exc()
-            results.append((f"{display_name} - Python Import", False))
+                print_warning(f"  ! {dir_name}/: Not found (recommended)")
         
-        # Test 4: Compliance Check
-        try:
-            compliance_result = test_agent_skills_compliance(metadata, skill_name)
-            results.append((f"{display_name} - Compliance", compliance_result))
-        except Exception as e:
-            print(f"❌ Compliance test failed: {e}")
-            results.append((f"{display_name} - Compliance", False))
+        # Check ideagen skill
+        print_info("\nChecking nvidia_ideagen_skill...")
+        idea_skill = base_path / "nvidia_ideagen_skill"
+        
+        required_files_idea = {
+            "config.yaml": "Configuration file",
+            "SKILL.md": "Skill instructions",
+            "scripts/ideagen_skill.py": "Implementation",
+            "scripts/__init__.py": "Package init"
+        }
+        
+        for file, desc in required_files_idea.items():
+            file_path = idea_skill / file
+            if file_path.exists():
+                print_success(f"  ✓ {file}: {desc}")
+            else:
+                print_error(f"  ✗ {file}: MISSING")
+                all_present = False
+        
+        for dir_name, desc in recommended_dirs.items():
+            dir_path = idea_skill / dir_name
+            if dir_path.exists() and dir_path.is_dir():
+                files = list(dir_path.iterdir())
+                print_success(f"  ✓ {dir_name}/: {desc} ({len(files)} files)")
+            else:
+                print_warning(f"  ! {dir_name}/: Not found (recommended)")
+        
+        if all_present:
+            print_success("\nAll required files present")
+            return True, None
+        else:
+            print_error("\nSome required files missing")
+            return False, "Missing files"
     
-    return results
+    except Exception as e:
+        print_error(f"Directory structure test failed: {e}")
+        traceback.print_exc()
+        return False, str(e)
 
 
 def main():
-    """Run all tests using CLI orchestration pattern"""
-    print("\n" + "="*80)
-    print("AGENT SKILLS - CLI ORCHESTRATION TEST SUITE")
-    print("Based on: https://github.com/SpillwaveSolutions/using-claude-code-cli-agent-skill")
-    print("="*80)
+    """Run all tests"""
+    print_section("ExpAgentSkill - Comprehensive Test Suite")
+    print_info("Testing skill_loader.py and AI Planner / NAT integration")
+    print_info(f"Base path: {Path(__file__).parent}")
+    print_info(f"Python version: {sys.version}")
     
-    orchestrator = SkillCLIOrchestrator()
+    results = TestResults()
     
-    # Test all skills
-    results = test_all_skills(orchestrator)
+    # Run all tests
+    tests = [
+        ("Import SkillLoader", test_skill_loader_import),
+        ("Skill Discovery", test_skill_discovery),
+        ("Skill Metadata", test_skill_metadata),
+        ("Tool Auto-Discovery", test_tool_discovery),
+        ("LangChain Tool Creation", test_langchain_tool_creation),
+        ("Access Control", test_access_control),
+        ("Resource Tools", test_resource_tools),
+        ("Calendar Skill Execution", test_calendar_skill_execution),
+        ("IdeaGen Skill Execution", test_ideagen_skill_execution),
+        ("Skills XML Generation", test_skills_xml_generation),
+        ("Pydantic Model Generation", test_pydantic_model_generation),
+        ("Directory Structure", test_directory_structure),
+    ]
     
-    # Summary
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
+    for test_name, test_func in tests:
+        try:
+            passed, details = test_func()
+            results.add(test_name, passed, details or "")
+        except Exception as e:
+            print_error(f"Test crashed: {e}")
+            traceback.print_exc()
+            results.add(test_name, False, f"Crashed: {str(e)}")
     
-    passed = sum(1 for _, result in results if result is True)
-    skipped = sum(1 for _, result in results if result is None)
-    failed = sum(1 for _, result in results if result is False)
-    total = len(results)
+    # Print summary
+    exit_code = results.summary()
     
-    for test_name, result in results:
-        if result is True:
-            status = "✅ PASS"
-        elif result is None:
-            status = "⚠️  SKIP"
-        else:
-            status = "❌ FAIL"
-        print(f"{status}: {test_name}")
+    # Additional info
+    if exit_code == 0:
+        print(f"\n{Colors.BOLD}Next Steps:{Colors.RESET}")
+        print("  1. Both skills are ready for AI Planner / NAT integration")
+        print("  2. See QUICKSTART.md for usage examples")
+        print("  3. See README_NEW_ARCHITECTURE.md for complete documentation")
+        print(f"\n{Colors.BOLD}Note:{Colors.RESET}")
+        print("  - Set NVIDIA_API_KEY to test idea generation and NL parsing")
+        print("  - Install langchain and pydantic for full NAT integration")
     
-    print(f"\n📊 Results: {passed} passed, {skipped} skipped, {failed} failed out of {total} tests")
-    
-    if failed == 0:
-        print("\n🎉 All tests passed! Skills are CLI-ready and Agent Skills API compliant.")
-        print("\n💡 Next Steps:")
-        print("   1. Install Claude CLI: https://github.com/anthropics/claude-cli")
-        print("   2. Use calendar skill: claude --add-dir ./calendar_assistant_skill -p 'create meeting'")
-        print("   3. Use ideagen skill: claude --add-dir ./nvidia_ideagen_skill -p 'generate ideas'")
-        return 0
-    else:
-        print(f"\n⚠️  {failed} test(s) failed. Review above for details.")
-        if skipped > 0:
-            print(f"   Note: {skipped} test(s) were skipped (e.g., missing API key)")
-        return 1
+    return exit_code
+
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
